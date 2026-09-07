@@ -4,15 +4,26 @@ title: Installation & Setup
 
 # Installation & Setup
 
+> **Using the Waveshare 7B?** The fastest path is to use the complete
+> [audio-test and voice-assistant examples]({{ '/examples/' | relative_url }}).
+> Run the audio test first, then move to the voice assistant after the complete
+> capture, reference, and playback path is verified.
+
 You do not need to manually download this repository. Instead simply reference this repository from `external_components`:
 
 ```yaml
 external_components:
-  - source: github://matt123p/esphome-aec@main
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome-aec
+      ref: main
+      path: src/esphome
     components: [aec_audio]
 ```
 
-In addition, if you are using the es7210 ADC, then you will also need this fix to allow you to put it in TDM mode:
+If you use the ES7210, its current ESPHome component does not expose TDM mode.
+Until that support is merged, load the implementation from ESPHome pull request
+18954 separately:
 
 ```yaml
 external_components:
@@ -46,10 +57,13 @@ Then:
 For a staged hardware bring-up of a brand-new board, see
 [First-Time Board Setup and AEC Bring-Up]({{ '/first-time-setup/' | relative_url }}).
 
+The configuration below documents the core audio integration. For a complete
+Waveshare 7B firmware—including display, touch, Wi-Fi companion, diagnostics,
+and voice-assistant integration—use the [examples]({{ '/examples/' | relative_url }}).
+
 ## Known-good starting configuration
 
-Known-good audio starting configuration for the Waveshare 7B (replace the
-repository URL with the published component location):
+Known-good audio starting configuration for the Waveshare 7B:
 
 ```yaml
 esp32:
@@ -73,8 +87,14 @@ esp_ldo:
     voltage: 2.5V
 
 external_components:
-  - source: github://matt123p/esphome-aec@main
-    components: [aec_audio, es7210] # omit es7210 if supplied elsewhere
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome-aec
+      ref: main
+      path: src/esphome
+    components: [aec_audio]
+  - source: github://pr#18954
+    components: [es7210]
 
 i2c:
   - id: audio_i2c
@@ -135,12 +155,13 @@ speaker:
   - platform: aec_audio
     id: full_duplex_speaker
     aec_audio_id: voice_audio
-    audio_dac: speaker_dac
 ```
 
 Do not also configure another component to own the same I2S peripheral or pins.
-The `audio_adc` object is used to initialize/configure the ADC, while
-`aec_audio` itself creates and owns the paired ESP-IDF TDM RX/TX channels.
+The `audio_adc` and `audio_dac` objects initialize their codecs. `aec_audio`
+references the ADC so setup ordering is correct, then creates and owns the
+paired ESP-IDF TDM RX/TX channels; the speaker child does not take an
+`audio_dac` option.
 
 Keep the AFE-related values in this example together for the first successful
 bring-up. In particular, start with `afe_input_format: mmr`,

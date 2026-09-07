@@ -66,10 +66,13 @@ component's buffers require more.
 | `platform` | yes | — | Must be `aec_audio`. |
 | `id` | yes | — | ESPHome speaker ID. |
 | `aec_audio_id` | yes | — | Parent hub ID. |
-| `audio_dac` | hardware-dependent | — | DAC used by ESPHome's speaker schema/setup. |
 | `bits_per_sample` | no | `16` | Only `16` is accepted. |
 | `num_channels` | no | `1` | `1` or `2`. |
 | `sample_rate` | no | `16000` | Only 16 kHz is accepted. |
+
+Configure the board's `audio_dac` separately so ESPHome initializes the codec.
+The `aec_audio` speaker writes TDM data directly and does not accept an
+`audio_dac` option.
 
 ## Optional meters and C++ test API
 

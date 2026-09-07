@@ -4,9 +4,10 @@ title: Overview
 
 # AEC Audio for ESPHome
 
-`aec_audio` is a custom ESPHome component for building a more capable voice
-assistant. It adds significant features to the processing of the audio to and
-from the Home Assistant's voice assistant.
+`aec_audio` is a custom ESPHome component for voice devices that need to keep
+listening while they play audio. It combines full-duplex TDM transport with
+Espressif's ESP-SR Audio Front-End and exposes standard ESPHome microphone and
+speaker endpoints.
 
 - It allows the device to **play audio and listen at the same time**,
   so it can continue detecting speech or a wake word while music, an alarm, or a
@@ -17,11 +18,12 @@ from the Home Assistant's voice assistant.
   noise, enhancing speech, and applying automatic gain control (AGC) so quiet and
   loud speech arrive at a more useful level.
 
-- It performs audio-rate matching so that differences in playback rate from the
-  Home Assistant to the ESP satelite are automatically matched.  This prevents
-  buffer under or over runs when there is a long spoken reply.
+- Its optional rate matching compensates for small, sustained playback-rate
+  differences, helping prevent under-runs or over-runs during long responses.
 
-- Adds a rolling buffer that ensures no speech is lost following the wake-word detection.
+- Its rolling pre-buffer bridges wake-word detection and voice-assistant
+  capture, preserving the beginning of the user's request when the integration
+  invokes the hand-off API.
 
 This component is an ESPHome wrapper and audio transport layer around
 Espressif's [ESP-SR Audio Front-End (AFE)](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/audio_front_end/README.html).
@@ -53,15 +55,31 @@ accepts signed 16-bit mono or stereo PCM at 16 kHz.
 > valid yet be rejected by ESP-SR during startup or produce an unsupported feed
 > or fetch shape.
 
-If you want to "just get going" - I strongly recommend you simply purchase the Waveshre
-board this component was developed against.  Note that, you will only get good results with
-certain hardware and you might find a cheap board is just too cheap - particulary if the
-speaker is low quality.
+For the shortest path to a working system, use the Waveshare reference board.
+AEC quality depends heavily on the codec routing, reference signal, amplifier,
+speaker, enclosure, and microphone placement; software cannot compensate for a
+clipped or badly distorted physical audio path.
 
-If you do manage to port this library to a different board, please shared the configuration
-for other users.  I will incorporate the example in to this repository.
+## Try it on the Waveshare 7B
+
+Two complete Waveshare 7B configurations are ready to use:
+
+1. Start with the **[audio-test example]({{ '/examples/' | relative_url }}#audio-test)**
+   to verify every TDM channel, the hardware reference, playback, and AFE output.
+2. Once the audio path passes, flash the **[voice-assistant example]({{ '/examples/' | relative_url }}#voice-assistant)**
+   for a fully integrated Home Assistant satellite with a minimal touch UI.
+
+The examples remove the guesswork from board-specific pins and codec routing
+while keeping credentials and installation-specific Home Assistant behavior out
+of the repository.
+
+Ports to other suitable boards are welcome. Please contribute the exact board
+revision, codec details, verified slot map, and tested configuration so other
+users can reproduce the result.
 
 ## Documentation
+
+- **[Waveshare 7B Examples]({{ '/examples/' | relative_url }})** — ready-to-run audio diagnostic and voice-assistant configurations.
 
 - **[Installation & Setup]({{ '/getting-started/' | relative_url }})** — add the component to ESPHome and flash the known-good starting configuration.
 - **[First-Time Board Setup]({{ '/first-time-setup/' | relative_url }})** — a staged hardware bring-up guide for a new board.

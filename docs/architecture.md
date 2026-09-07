@@ -98,8 +98,46 @@ Each step has a specific job:
 10. **Publication** returns one enhanced mono channel. A one-second rolling
     pre-roll is retained for fast wake-word-to-voice-assistant hand-off.
 
-If an AFE fetch fails, the component publishes the selected raw microphone
-pair for that frame and increments its dropped-frame counter. Setting
+## Rolling pre-buffer and wake-word hand-off
+
+Wake-word detection and voice-assistant capture are separate microphone
+consumers. When the detector recognizes a wake word, it has already consumed
+audio containing the beginning of the request. Stopping that listener and
+starting the voice assistant also takes time. Without a hand-off buffer, the
+speech-to-text stream can therefore begin late and lose a short command or the
+first word after the wake phrase.
+
+The microphone wrapper avoids that gap with two bounded PSRAM buffers:
+
+- a continuously overwritten **one-second history buffer**, independent of
+  whether a consumer is currently listening; and
+- a **four-second utterance queue** used to deliver the preserved prefix and
+  subsequent live audio in order.
+
+When wake-word detection fires, `request_pre_roll()` snapshots audio beginning
+100 ms before the last sample delivered to the detector. It also includes any
+newer samples already captured but not yet delivered. The snapshot remains
+armed while the wake-word listener stops and the voice-assistant listener
+starts. `begin_pre_roll_replay()` then releases the queued audio before normal
+live delivery continues, so the downstream stream is a single chronological
+utterance rather than a separate replay followed by live audio.
+
+The one-second history is a maximum retention window, not one second of audio
+blindly prepended to every request. The detector's recorded stream position is
+used to choose the hand-off point, with only 100 ms of extra headroom. Storage
+is fixed-size: history overwrites its oldest samples, while an active utterance
+preserves FIFO order and reports dropped bytes if its four-second queue is
+exhausted.
+
+Audio produced while the device is playing a voice-assistant response, plus a
+300 ms acoustic tail, is excluded from both live delivery and rolling history.
+This reduces the chance that residual synthesized speech is replayed as the
+start of the user's next request. The integration must call the hand-off methods
+at the correct wake-word and voice-assistant lifecycle points; the microphone
+platform cannot infer those transitions on its own.
+
+If an AFE fetch fails, the component falls back to the first selected raw
+microphone channel for that frame and increments its dropped-frame counter. Setting
 `diagnostic_raw_slot` deliberately bypasses the AFE and publishes that raw slot
 as mono, which is useful for finding the physical TDM mapping.
 

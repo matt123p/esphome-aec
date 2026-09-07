@@ -97,12 +97,12 @@ processing, noise suppression, speech enhancement, and AGC run in the ESP-SR
 AFE on the ESP32-S3 or ESP32-P4. An ES7210 is useful AEC-supporting hardware
 only when the board routes the necessary microphone and reference signals to it.
 
-The known-good hardware is the
+The reference hardware is the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B).
 It combines an ESP32-P4 with PSRAM, two onboard microphones, an ES7210 capture
 ADC, an ES8311 playback codec, a speaker connection, and an ESP32-C6 companion
-for networking. The repository's `esp_1024_audio_test.yaml` contains the tested
-pin and slot mapping for that board. Similar-looking Waveshare models should
+for networking. The tested pin and slot mapping is shown in the
+[installation guide]({{ '/getting-started/' | relative_url }}). Similar-looking Waveshare models should
 not be assumed to use the same audio routing without checking their schematics.
 
 For best results, place the two microphones consistently, avoid mechanical

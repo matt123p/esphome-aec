@@ -1,0 +1,281 @@
+esphome:
+  name: esp-1024-audio-test
+  friendly_name: ESP 1024 Audio Test
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_on: speaker_amp
+      - light.turn_on:
+          id: display_backlight
+          brightness: 100%
+      - audio_dac.set_volume:
+          id: audio_adc_es8311
+          volume: 70%
+      - lambda: |-
+          id(audio_test_meters).set_spectrum_enabled(true);
+          id(audio_test).set_diagnostic_raw_slot(-1);
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome-aec
+      ref: main
+      path: src/esphome
+    components: [aec_audio]
+  - source: github://pr#18954
+    components: [es7210]
+
+esp32:
+  board: esp32-p4
+  variant: ESP32P4
+  engineering_sample: true
+  flash_size: 32MB
+  cpu_frequency: 360MHz
+  framework:
+    type: esp-idf
+    advanced:
+      loop_task_stack_size: 16384
+      enable_idf_experimental_features: true
+    sdkconfig_options:
+      CONFIG_ESP_MAIN_TASK_STACK_SIZE: "16384"
+      CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: "y"
+
+psram:
+  mode: hex
+  speed: 200MHz
+  ignore_not_found: false
+
+esp_ldo:
+  - channel: 3
+    voltage: 2.5V
+
+esp32_hosted:
+  variant: ESP32C6
+  active_high: true
+  slot: 1
+  clk_pin: GPIO18
+  cmd_pin: GPIO19
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  reset_pin: GPIO54
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+i2c:
+  - id: bus_a
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+    scan: true
+
+audio_adc:
+  - platform: es7210
+    id: audio_adc_es7210
+    i2c_id: bus_a
+    address: 0x40
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    mic_gain: 33db
+    tdm: true
+
+audio_dac:
+  - platform: es8311
+    id: audio_adc_es8311
+    i2c_id: bus_a
+    address: 0x18
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    use_mclk: true
+
+aec_audio:
+  id: audio_test
+  audio_adc: audio_adc_es7210
+  mclk_pin: GPIO13
+  bclk_pin: GPIO12
+  lrclk_pin: GPIO10
+  din_pin: GPIO11
+  dout_pin: GPIO9
+  i2s_port: 0
+  tdm_slots: 4
+  microphone_slots: [0, 2]
+  reference_source: analog_slot
+  reference_slot: 1
+  reference_delay_samples: 0
+  tx_slots: [0, 1]
+  aec_mode: fd_low_cost
+  # The AFE buffer is constructed from the two selected microphones and the
+  # reference; it does not contain the ES7210's unused physical TDM slot.
+  afe_input_format: mmr
+  agc: true
+  nlp_level: normal
+  filter_length: 4
+  resampler: true
+  wakenet: false
+  meters:
+    id: audio_test_meters
+
+microphone:
+  - platform: aec_audio
+    id: audio_test_microphone
+    aec_audio_id: audio_test
+
+speaker:
+  - platform: aec_audio
+    id: audio_test_speaker
+    aec_audio_id: audio_test
+
+media_player:
+  - platform: speaker
+    id: audio_test_player
+    internal: true
+    announcement_pipeline:
+      speaker: audio_test_speaker
+      format: WAV
+    files:
+      - id: audio_test_file
+        file: test-audio.wav
+    on_play:
+      - lambda: |-
+          id(audio_test_playing) = true;
+          lv_label_set_text(audio_test_playback_label, "STOP TEST AUDIO");
+    on_idle:
+      - lambda: |-
+          id(audio_test_playing) = false;
+          lv_label_set_text(audio_test_playback_label, "PLAY TEST AUDIO");
+
+switch:
+  - platform: gpio
+    id: speaker_amp
+    name: Audio Test Speaker Amplifier
+    pin: GPIO53
+    internal: true
+    restore_mode: ALWAYS_ON
+
+output:
+  - platform: ledc
+    pin:
+      number: GPIO32
+      inverted: true
+    id: backlight
+    channel: 0
+    frequency: 1000Hz
+    min_power: 0.1
+    max_power: 0.8
+
+light:
+  - platform: monochromatic
+    output: backlight
+    id: display_backlight
+    name: Audio Test Backlight
+    internal: true
+    restore_mode: ALWAYS_ON
+    gamma_correct: 1.0
+    default_transition_length: 0s
+
+globals:
+  - id: audio_test_source
+    type: int
+    restore_value: no
+    initial_value: '-1'
+  - id: audio_test_playing
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+touchscreen:
+  platform: gt911
+  id: audio_test_touchscreen
+  display: audio_test_display
+  i2c_id: bus_a
+  reset_pin: GPIO23
+  transform:
+    mirror_x: true
+    mirror_y: true
+
+display:
+  - platform: mipi_dsi
+    id: audio_test_display
+    update_interval: never
+    model: WAVESHARE-ESP32-P4-WIFI6-TOUCH-LCD-7B
+    color_depth: 16bit
+    pixel_mode: 16bit
+    byte_order: little_endian
+
+interval:
+  - interval: 100ms
+    then:
+      - lambda: |-
+          lv_obj_t *source_buttons[5] = {audio_test_source_afe, audio_test_source_mic1,
+                                         audio_test_source_mic2, audio_test_source_mic3,
+                                         audio_test_source_mic4};
+          const int selected_button = id(audio_test_source) < 0 ? 0 : id(audio_test_source);
+          for (int button = 0; button < 5; button++)
+            lv_obj_set_style_bg_color(source_buttons[button],
+                                      lv_color_hex(button == selected_button ? 0x0f766e : 0x1e293b), LV_PART_MAIN);
+          const float rms = id(audio_test_meters).get_output_dbfs();
+          const uint32_t peak = id(audio_test_meters).get_output_peak();
+          const uint32_t peak_3s = id(audio_test_meters).get_output_peak_3s();
+          auto sample_to_db = [](uint32_t sample) {
+            return sample > 0 ? 20.0f * log10f(sample / 32768.0f) : -96.0f;
+          };
+          const float peak_db = sample_to_db(peak);
+          const float peak_3s_db = sample_to_db(peak_3s);
+          auto width_for_db = [](float db) {
+            return static_cast<int>(std::max(0.0f, std::min(1.0f, (db + 72.0f) / 72.0f)) * 820.0f);
+          };
+          lv_obj_set_width(audio_test_rms_fill, width_for_db(rms));
+          lv_obj_set_width(audio_test_peak_fill, width_for_db(peak_db));
+          lv_obj_set_x(audio_test_peak_3s_marker, 82 + width_for_db(peak_3s_db));
+          char levels[96];
+          snprintf(levels, sizeof(levels), "RMS %+.1f dBFS     PEAK %+.1f dBFS     3s PEAK %+.1f dBFS",
+                   rms, peak_db, peak_3s_db);
+          lv_label_set_text(audio_test_levels, levels);
+
+          static lv_obj_t *bars[aec_audio::AECAudioMetersComponent::SPECTRUM_BINS]{};
+          for (uint8_t bin = 0; bin < aec_audio::AECAudioMetersComponent::SPECTRUM_BINS; bin++) {
+            if (bars[bin] == nullptr) {
+              bars[bin] = lv_obj_create(audio_test_spectrum);
+              lv_obj_remove_style_all(bars[bin]);
+              lv_obj_set_pos(bars[bin], 18 + bin * 29, 222);
+              lv_obj_set_size(bars[bin], 20, 1);
+              lv_obj_set_style_radius(bars[bin], 4, LV_PART_MAIN);
+              lv_obj_set_style_bg_opa(bars[bin], LV_OPA_COVER, LV_PART_MAIN);
+            }
+            const float db = std::max(-80.0f, std::min(0.0f, id(audio_test_meters).get_spectrum_db(bin)));
+            const int height = std::max(1, static_cast<int>((db + 80.0f) * 185.0f / 80.0f));
+            const uint32_t color = db > -12.0f ? 0xef4444 : (db > -28.0f ? 0xf59e0b : 0x22c55e);
+            lv_obj_set_y(bars[bin], 223 - height);
+            lv_obj_set_height(bars[bin], height);
+            lv_obj_set_style_bg_color(bars[bin], lv_color_hex(color), LV_PART_MAIN);
+          }
+
+          const auto state = id(audio_test).get_capture_state();
+          if (state == aec_audio::AEC_CAPTURE_CAPTURING) {
+            const float seconds = id(audio_test).get_capture_frames() / 16000.0f;
+            char status[48];
+            snprintf(status, sizeof(status), "Recording... %.1f / 2.0 seconds", seconds);
+            lv_label_set_text(audio_test_record_status, status);
+          } else if (state == aec_audio::AEC_CAPTURE_READY) {
+            lv_label_set_text(audio_test_record_status, "2-second recording ready");
+          } else {
+            lv_label_set_text(audio_test_record_status, "No recording");
+          }
+
+lvgl:
+  id: audio_test_lvgl
+  color_depth: 16
+  byte_order: little_endian
+  default_font: montserrat_18
+  pages: !include ui.yaml

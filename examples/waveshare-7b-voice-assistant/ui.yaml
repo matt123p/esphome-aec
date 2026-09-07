@@ -1,0 +1,90 @@
+- id: assistant_page
+  bg_color: 0x07111f
+  widgets:
+    - label:
+        x: 40
+        y: 42
+        width: 944
+        text: "VOICE ASSISTANT"
+        text_font: montserrat_32
+        text_color: 0xe2e8f0
+        text_align: CENTER
+
+    - obj:
+        id: assistant_status_card
+        x: 112
+        y: 120
+        width: 800
+        height: 250
+        radius: 28
+        border_width: 0
+        bg_color: 0x64748b
+        pad_all: 0
+        widgets:
+          - label:
+              id: assistant_status_label
+              x: 32
+              y: 48
+              width: 736
+              text: "Ready"
+              text_font: montserrat_48
+              text_color: 0xffffff
+              text_align: CENTER
+          - label:
+              id: assistant_detail_label
+              x: 52
+              y: 130
+              width: 696
+              height: 82
+              text: "Say Alexa or tap Start"
+              text_font: montserrat_24
+              text_color: 0xf1f5f9
+              text_align: CENTER
+              long_mode: WRAP
+
+    - label:
+        x: 164
+        y: 414
+        width: 90
+        text: "Volume"
+        text_color: 0x94a3b8
+    - slider:
+        x: 270
+        y: 420
+        width: 590
+        height: 22
+        min_value: 0
+        max_value: 100
+        value: 60
+        bg_color: 0x1e293b
+        indicator:
+          bg_color: 0x0f766e
+        knob:
+          bg_color: 0xffffff
+        on_value:
+          - number.set:
+              id: assistant_volume
+              value: !lambda return x;
+
+    - button:
+        x: 352
+        y: 488
+        width: 320
+        height: 76
+        radius: 38
+        bg_color: 0x0f766e
+        on_press:
+          - if:
+              condition:
+                lambda: return id(assistant_state) == 0;
+              then:
+                - script.execute: start_voice_assistant
+              else:
+                - script.execute: stop_voice_assistant
+        widgets:
+          - label:
+              id: assistant_action_label
+              text: "START"
+              text_font: montserrat_32
+              text_color: 0xffffff
+              align: CENTER

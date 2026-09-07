@@ -1,0 +1,260 @@
+- id: page_audio_test
+  bg_color: 0x07111f
+  widgets:
+    - label:
+        x: 34
+        y: 22
+        width: 956
+        text: "1024 AUDIO INPUT TEST"
+        text_font: montserrat_32
+        text_color: 0xe2e8f0
+        text_align: CENTER
+    - label:
+        id: audio_test_source_label
+        x: 34
+        y: 64
+        width: 956
+        text: "Selected source: AFE output"
+        text_font: montserrat_18
+        text_color: 0x94a3b8
+        text_align: CENTER
+
+    - button:
+        id: audio_test_source_afe
+        x: 34
+        y: 96
+        width: 176
+        height: 52
+        bg_color: 0x0f766e
+        on_press:
+          - lambda: |-
+              id(audio_test_source) = -1;
+              id(audio_test).set_diagnostic_raw_slot(-1);
+              lv_label_set_text(audio_test_source_label, "Selected source: AFE output");
+        widgets:
+          - label:
+              text: "AFE OUTPUT"
+              text_font: montserrat_18
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        id: audio_test_source_mic1
+        x: 226
+        y: 96
+        width: 176
+        height: 52
+        bg_color: 0x1e293b
+        on_press:
+          - lambda: |-
+              id(audio_test_source) = 1;
+              id(audio_test).set_diagnostic_raw_slot(0);
+              lv_label_set_text(audio_test_source_label, "Selected source: raw ADC channel 1 / TDM slot 0 (microphone 1)");
+        widgets:
+          - label:
+              text: "RAW MIC 1"
+              text_font: montserrat_18
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        id: audio_test_source_mic2
+        x: 418
+        y: 96
+        width: 176
+        height: 52
+        bg_color: 0x1e293b
+        on_press:
+          - lambda: |-
+              id(audio_test_source) = 2;
+              id(audio_test).set_diagnostic_raw_slot(2);
+              lv_label_set_text(audio_test_source_label, "Selected source: raw ADC channel 2 / TDM slot 2 (microphone 2)");
+        widgets:
+          - label:
+              text: "RAW MIC 2"
+              text_font: montserrat_18
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        id: audio_test_source_mic3
+        x: 610
+        y: 96
+        width: 176
+        height: 52
+        bg_color: 0x1e293b
+        on_press:
+          - lambda: |-
+              id(audio_test_source) = 3;
+              id(audio_test).set_diagnostic_raw_slot(1);
+              lv_label_set_text(audio_test_source_label, "Selected source: raw ADC channel 3 / TDM slot 1 (AEC reference)");
+        widgets:
+          - label:
+              text: "RAW MIC 3"
+              text_font: montserrat_18
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        id: audio_test_source_mic4
+        x: 802
+        y: 96
+        width: 176
+        height: 52
+        bg_color: 0x1e293b
+        on_press:
+          - lambda: |-
+              id(audio_test_source) = 4;
+              id(audio_test).set_diagnostic_raw_slot(3);
+              lv_label_set_text(audio_test_source_label, "Selected source: raw ADC channel 4 / TDM slot 3 (unused)");
+        widgets:
+          - label:
+              text: "RAW MIC 4"
+              text_font: montserrat_18
+              text_color: 0xffffff
+              align: CENTER
+
+    - label:
+        id: audio_test_levels
+        x: 82
+        y: 166
+        width: 860
+        text: "RMS -- dBFS     PEAK -- dBFS     3s PEAK -- dBFS"
+        text_font: montserrat_18
+        text_color: 0xcbd5e1
+        text_align: CENTER
+    - obj:
+        x: 82
+        y: 198
+        width: 820
+        height: 18
+        radius: 9
+        border_width: 0
+        bg_color: 0x1e293b
+        pad_all: 0
+        widgets:
+          - obj:
+              id: audio_test_rms_fill
+              x: 0
+              y: 0
+              width: 1
+              height: 18
+              radius: 9
+              border_width: 0
+              bg_color: 0x22c55e
+              pad_all: 0
+    - obj:
+        x: 82
+        y: 224
+        width: 820
+        height: 10
+        radius: 5
+        border_width: 0
+        bg_color: 0x1e293b
+        pad_all: 0
+        widgets:
+          - obj:
+              id: audio_test_peak_fill
+              x: 0
+              y: 0
+              width: 1
+              height: 10
+              radius: 5
+              border_width: 0
+              bg_color: 0xf59e0b
+              pad_all: 0
+    - obj:
+        id: audio_test_peak_3s_marker
+        x: 82
+        y: 193
+        width: 4
+        height: 46
+        radius: 2
+        border_width: 0
+        bg_color: 0xef4444
+        pad_all: 0
+
+    - obj:
+        id: audio_test_spectrum
+        x: 34
+        y: 255
+        width: 956
+        height: 248
+        radius: 14
+        border_width: 1
+        border_color: 0x334155
+        bg_color: 0x0b1726
+        pad_all: 0
+        widgets:
+          - label:
+              x: 18
+              y: 8
+              width: 920
+              text: "SPECTRUM          80 Hz                                                                                         8 kHz"
+              text_font: montserrat_18
+              text_color: 0x94a3b8
+
+    - button:
+        x: 92
+        y: 520
+        width: 240
+        height: 58
+        bg_color: 0x9f1239
+        on_press:
+          - lambda: |-
+              id(audio_test).start_capture(2 * 16000);
+              lv_label_set_text(audio_test_record_status, "Recording... 0.0 / 2.0 seconds");
+        widgets:
+          - label:
+              text: "RECORD 2 SECONDS"
+              text_font: montserrat_24
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        x: 392
+        y: 520
+        width: 240
+        height: 58
+        bg_color: 0x075985
+        on_press:
+          - lambda: |-
+              const size_t frames = id(audio_test).play_capture();
+              lv_label_set_text(audio_test_record_status,
+                                frames > 0 ? "Playing recorded audio" : "Record audio before playback");
+        widgets:
+          - label:
+              text: "PLAY RECORDING"
+              text_font: montserrat_24
+              text_color: 0xffffff
+              align: CENTER
+    - button:
+        x: 692
+        y: 520
+        width: 240
+        height: 58
+        bg_color: 0x166534
+        on_press:
+          - if:
+              condition:
+                lambda: return id(audio_test_playing);
+              then:
+                - media_player.stop:
+                    id: audio_test_player
+                    announcement: true
+              else:
+                - media_player.speaker.play_on_device_media_file:
+                    id: audio_test_player
+                    media_file: audio_test_file
+                    announcement: true
+        widgets:
+          - label:
+              id: audio_test_playback_label
+              text: "PLAY TEST AUDIO"
+              text_font: montserrat_20
+              text_color: 0xffffff
+              align: CENTER
+    - label:
+        id: audio_test_record_status
+        x: 344
+        y: 579
+        width: 336
+        text: "No recording"
+        text_font: montserrat_18
+        text_color: 0x94a3b8
+        text_align: CENTER
