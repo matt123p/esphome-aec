@@ -46,10 +46,3 @@ section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
   or entities.
 - No automatic recovery from persistent I2S or AFE failure.
 - AEC cannot fully model loudspeaker nonlinearities or rescue clipped signals.
-
-## References
-
-- [ESP-SR 2.4.6 component registry](https://components.espressif.com/components/espressif/esp-sr/versions/2.4.6/readme?language=en)
-- [ESP-SR changelog](https://components.espressif.com/components/espressif/esp-sr/versions/2.4.6/changelog?language=en)
-- [Espressif AFE framework and input formats](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/audio_front_end/README.html)
-- [Espressif full-duplex AEC modes, NLP, and resource data](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/acoustic_echo_cancellation/README.html)

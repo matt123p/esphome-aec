@@ -379,7 +379,7 @@ files and the C++ sources. Reference its repository from `external_components`:
 
 ```yaml
 external_components:
-  - source: github://YOUR_GITHUB_USER/YOUR_REPOSITORY@main
+  - source: github://matt123p/esphome-aec@main
     components: [aec_audio]
 ```
 
@@ -431,7 +431,7 @@ esp_ldo:
     voltage: 2.5V
 
 external_components:
-  - source: github://YOUR_GITHUB_USER/YOUR_REPOSITORY@main
+  - source: github://matt123p/esphome-aec@main
     components: [aec_audio, es7210] # omit es7210 if supplied elsewhere
 
 i2c:

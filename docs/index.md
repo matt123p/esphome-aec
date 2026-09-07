@@ -70,3 +70,10 @@ for other users.  I will incorporate the example in to this repository.
 - **[Configuration Reference]({{ '/configuration/' | relative_url }})** — every option for the hub, microphone, speaker, and meters.
 - **[Testing & Tuning]({{ '/tuning/' | relative_url }})** — verify startup, map TDM slots, align references, and measure cancellation.
 - **[Troubleshooting & Limitations]({{ '/troubleshooting/' | relative_url }})** — common symptoms and the current constraints of the component.
+
+## References
+
+- [ESP-SR 2.4.6 component registry](https://components.espressif.com/components/espressif/esp-sr/versions/2.4.6/readme?language=en)
+- [ESP-SR changelog](https://components.espressif.com/components/espressif/esp-sr/versions/2.4.6/changelog?language=en)
+- [Espressif AFE framework and input formats](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/audio_front_end/README.html)
+- [Espressif full-duplex AEC modes, NLP, and resource data](https://docs.espressif.com/projects/esp-sr/en/latest/esp32p4/acoustic_echo_cancellation/README.html)

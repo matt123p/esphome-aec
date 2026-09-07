@@ -4,23 +4,20 @@ title: Installation & Setup
 
 # Installation & Setup
 
-Publish or copy the whole `aec_audio` directory, including both Python platform
-files and the C++ sources. Reference its repository from `external_components`:
+You do not need to manually download this repository. Instead simply reference this repository from `external_components`:
 
 ```yaml
 external_components:
-  - source: github://YOUR_GITHUB_USER/YOUR_REPOSITORY@main
+  - source: github://matt123p/esphome-aec@main
     components: [aec_audio]
 ```
 
-For local development:
+In addition, if you are using the es7210 ADC, then you will also need this fix to allow you to put it in TDM mode:
 
 ```yaml
 external_components:
-  - source:
-      type: local
-      path: components
-    components: [aec_audio]
+  - source: github://pr#18954
+    components: [es7210]
 ```
 
 Then:
@@ -76,7 +73,7 @@ esp_ldo:
     voltage: 2.5V
 
 external_components:
-  - source: github://YOUR_GITHUB_USER/YOUR_REPOSITORY@main
+  - source: github://matt123p/esphome-aec@main
     components: [aec_audio, es7210] # omit es7210 if supplied elsewhere
 
 i2c:
