@@ -19,8 +19,12 @@ title: Troubleshooting & Limitations
   processing time.
 - **Failure to allocate:** confirm PSRAM is enabled and working; remove meters,
   use `fd_low_cost`, and reduce other memory-heavy features.
-- **Long playback drifts:** enable `resampler`; if the input is not nominally
-  16 kHz PCM, convert it before it reaches this component.
+- **Long playback slowly underruns or overruns:** enable `resampler` and play a
+  continuous test for at least 30 seconds. Check `Playback input rate` and
+  `Playback rate adjust` logs to confirm the host estimate settles near 16 kHz.
+  If it reaches the 15–17 kHz correction limit, or gaps remain bursty rather
+  than gradual, fix the source or network path. Non-16 kHz audio must be
+  converted before it reaches this component.
 - **Wake word fails only during playback:** first validate AEC independently,
   then run ESPHome Micro Wake Word from `cleaned_microphone`. Leave the
   experimental ESP-SR `wakenet` option off unless its model path is intentionally

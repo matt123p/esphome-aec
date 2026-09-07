@@ -43,8 +43,35 @@ to or recording the `aec_audio` microphone. Check that:
 - `rx_errors`, `tx_errors`, underruns, and dropped frames do not continually
   increase when `diagnostics: true` is enabled.
 
-If long-form audio slowly underruns or overruns while short clips work, try
-`resampler: true`. It is meant for small sustained rate mismatches only.
+If long-form audio slowly underruns or overruns while short clips work, follow
+the automatic rate-matching test below.
+
+### Automatic rate matching
+
+The host and satellite have independent clocks. To test whether their small
+sustained difference is causing playback drift:
+
+1. Enable `resampler: true` and `diagnostics: true`.
+2. Play continuous, nominally 16 kHz PCM for at least 30 seconds. Several
+   minutes is better for exposing a small mismatch.
+3. Confirm the log initially reports `Playback resampler enabled` at 16000 Hz.
+4. Watch `Playback input rate` for the offered and accepted host rates.
+5. Watch `Playback rate adjust` for the measured TDM rate, estimated host input,
+   target, and gradually adjusted playback rate.
+6. Confirm playback remains continuous and that underrun, TX-error, and dropped
+   frame counters do not continually rise.
+
+The host estimate needs at least three seconds before it becomes active. A
+settled value slightly above or below 16 kHz is expected; it indicates that the
+component is adding or removing a small number of interpolated samples to keep
+the one-second playback buffer stable. The correction is retained for the next
+response and refined when new audio arrives.
+
+Rate matching is not a cure for the host sending the wrong format, large network
+gaps, an overloaded device, or persistent I2S errors. Convert all input to
+signed 16-bit, nominally 16 kHz PCM before it reaches the speaker. If the
+estimated rate repeatedly reaches the 15 kHz or 17 kHz limit, investigate the
+source and transport rather than treating the limit as normal clock drift.
 
 ## 4. Align a software reference
 

@@ -33,7 +33,7 @@ setting at a time.
 | `agc` | no | `true` | Enable AFE automatic gain control. |
 | `noise_suppression` | no | `true` | Enable AFE noise suppression. |
 | `speech_enhancement` | no | `true` | Enable the dual-microphone speech-enhancement stage. |
-| `resampler` | no | `false` | Compile playback drift compensation around the nominal 16 kHz rate. |
+| `resampler` | no | `false` | Compile automatic host-to-satellite playback rate matching around the nominal 16 kHz rate. |
 | `wakenet` | no | `false` | Experimental ESP-SR WakeNet path. Also enables AFE VAD and changes the AFE type/output behavior. Leave off for ESPHome Micro Wake Word. |
 | `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of AFE output. Remove it after mapping/testing. |
 | `telemetry` | no | `false` | Compile periodic `AEC_EFFECT` attenuation/correlation logging. |
@@ -47,6 +47,30 @@ use. Its published ESP32-P4 single-channel figures for the standalone FD AEC
 are about 19 KB internal RAM plus 102 KB PSRAM in low-cost mode, and 8 KB plus
 138 KB in high-performance mode; the complete dual-microphone AFE and this
 component's buffers require more.
+
+### Automatic playback rate matching
+
+Enable rate matching when Home Assistant playback is nominally 16 kHz but long
+responses slowly underrun or overrun:
+
+```yaml
+aec_audio:
+  # ...
+  resampler: true
+```
+
+The component measures the sustained rate at which the host's PCM is accepted
+and gently resamples it to the satellite's fixed 16 kHz TDM clock. Correction is
+automatic: there is no rate or ratio to configure. The estimator uses
+multi-second windows, limits its target to 15–17 kHz, and changes the active
+rate one hertz at a time to avoid abrupt pitch or timing changes. Its last
+learned rate is reused at the beginning of the next playback stream.
+
+This option is for small clock and delivery-rate differences, not source-format
+conversion. The speaker input must remain signed 16-bit, nominally 16 kHz PCM.
+See [How It Works]({{ '/architecture/' | relative_url }}#playback-automatic-rate-matching-and-reference)
+for the control flow and [Testing & Tuning]({{ '/tuning/' | relative_url }}#automatic-rate-matching)
+for validation.
 
 ## Microphone child
 

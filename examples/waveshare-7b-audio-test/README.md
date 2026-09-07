@@ -35,3 +35,11 @@ remove that `external_components` entry.
 
 The included `test-audio.wav` is used only as a repeatable signal for playback
 and cancellation tests.
+
+This example enables `resampler: true`, so playback also uses the component's
+automatic host-to-satellite rate matching. It measures small sustained
+differences between incoming nominal 16 kHz PCM and the board's physical TDM
+clock, then gradually interpolates the stream to prevent long playback from
+draining or filling the buffer. See the
+[rate-matching documentation](https://matt123p.github.io/esphome-aec/architecture/#playback-automatic-rate-matching-and-reference)
+for details.

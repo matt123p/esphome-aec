@@ -141,7 +141,7 @@ microphone channel for that frame and increments its dropped-frame counter. Sett
 `diagnostic_raw_slot` deliberately bypasses the AFE and publishes that raw slot
 as mono, which is useful for finding the physical TDM mapping.
 
-### Playback and reference
+### Playback, automatic rate matching, and reference
 
 ```text
 ESPHome speaker (16-bit, 16 kHz, mono/stereo)
@@ -157,6 +157,43 @@ Mono is duplicated into both TX slots. Stereo left and right go to the two TX
 slots and are averaged for a mono software reference. The resampler is only for
 small clock/source drift around 16 kHz; it is not a decoder or an arbitrary
 sample-rate converter.
+
+#### Why rate matching is needed
+
+The Home Assistant host and the satellite do not share an audio clock. The host
+may label its PCM as 16 kHz while delivering it at a sustained average rate that
+is slightly faster or slower than the satellite's physical 16 kHz TDM clock.
+Network packet timing can add short bursts and gaps, but over a long response a
+small underlying rate error steadily fills or drains the playback buffer. The
+eventual result is an overrun, underrun, click, or truncated audio even though a
+short response sounds correct.
+
+With `resampler: true`, the component automatically matches the incoming host
+stream to the satellite clock:
+
+1. Playback starts at the nominal 16,000 samples per second.
+2. The component measures how many accepted source frames arrive over time. It
+   forms a new estimate only after at least three seconds and two seconds of
+   audio, which avoids reacting to individual network packets.
+3. It also measures the rate at which complete frames are written to the TDM
+   peripheral. That hardware measurement is used until a host-rate estimate is
+   available.
+4. The target is limited to 15,000–17,000 Hz, and the active correction moves
+   toward it one hertz at a time instead of changing abruptly.
+5. A continuous fractional-phase linear interpolator produces slightly more or
+   fewer samples for the fixed 16 kHz output. Phase and the preceding sample
+   carry across packet boundaries, avoiding a discontinuity at each packet.
+
+The learned host rate is retained between playback streams so a later response
+can begin with the previous correction. A gap of more than one second resets
+the measurement window, allowing the next stream to establish a fresh estimate.
+Stopping or clearing playback resets interpolation state so samples from two
+unrelated streams are never blended.
+
+This is automatic transport-clock compensation. It does not decode compressed
+audio, accept a genuinely different sample rate, repair severe network
+starvation, or change the hardware clock. Input must still be signed 16-bit,
+nominally 16 kHz PCM. Mono and stereo are both supported.
 
 The playback task has priority 20 and the AFE/capture task priority 19; both
 are pinned to core 0. Per-frame buffers use internal RAM. Playback and

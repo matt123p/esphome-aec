@@ -13,6 +13,12 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B.
   disconnects or pipeline failures; and
 - persistent speaker volume control.
 
+The example also enables automatic host-to-satellite playback rate matching.
+This compensates for small sustained differences between Home Assistant's PCM
+delivery rate and the satellite's fixed 16 kHz audio clock, improving stability
+during long spoken responses. See
+[How It Works](https://matt123p.github.io/esphome-aec/architecture/#playback-automatic-rate-matching-and-reference).
+
 ## Use it
 
 1. Copy `secrets.yaml.example` to `secrets.yaml` and enter your Wi-Fi details.
