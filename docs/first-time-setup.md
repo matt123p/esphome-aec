@@ -91,15 +91,6 @@ needed. Listen to or record the published `aec_audio` microphone while you:
 2. play a repeatable test signal through the speaker; and
 3. observe the raw-slot RMS/peak logs.
 
-Record what each slot actually contains:
-
-| TDM slot | Observed signal | Quiet level | Speech/playback peak | Notes |
-| ---: | --- | ---: | ---: | --- |
-| 0 |  |  |  |  |
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-
 Both microphone channels must be intelligible, similarly sensitive, and free
 of clipping, buzz, repeated samples, and incorrect pitch. Adjust gain in the
 ADC component. Leave headroom: AEC and AGC cannot repair samples already clipped
