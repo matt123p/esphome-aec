@@ -1,10 +1,14 @@
+---
+title: First-Time Board Setup
+---
+
 # First-Time Board Setup and AEC Bring-Up
 
 This guide describes how to bring up a new ESPHome display board for use with
 the aec_audio component. It uses the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B)
 and this repository's
-[esp_1024_audio_test.yaml](../../esp_1024_audio_test.yaml) as the known-good
+`esp_1024_audio_test.yaml` as the known-good
 example, but
 the same staged process applies to another ESP32-S3 or ESP32-P4 board.
 
@@ -12,7 +16,7 @@ The most important rule is: **ignore AEC at first and get the basic board
 working.** Display, touch, codec control, raw microphone capture, playback, and
 the hardware reference are separate systems. Bring them up one at a time.
 
-> [!NOTE]
+> **Note**
 > A coding agent such as ChatGPT or Gemini can help port the 1024 x 600 LVGL
 > example to a different screen size, translate pin assignments from a
 > schematic into ESPHome YAML, and interpret build or startup logs. Give it the
@@ -49,7 +53,7 @@ Do not add aec_audio, codecs, speaker, media player, or the audio test UI yet.
 First prove the processor, flash, PSRAM, logger, display, LVGL, and touch setup.
 
 For the Waveshare 7B, take the board-level settings from
-[esp_1024_audio_test.yaml](../../esp_1024_audio_test.yaml):
+`esp_1024_audio_test.yaml`:
 
 - ESP32-P4 target and ESP-IDF framework;
 - 32 MB flash and the correct PSRAM mode/speed;
@@ -76,10 +80,10 @@ return to it.
 ## 2. Load the AEC hardware test configuration
 
 Once the basic board works, use
-[esp_1024_audio_test.yaml](../../esp_1024_audio_test.yaml) as the example. It
+`esp_1024_audio_test.yaml` as the example. It
 adds the ADC/DAC, aec_audio, test speaker and media player, audio meters, and
 the LVGL page in
-[pages_1024/audio_test.yaml](../../pages_1024/audio_test.yaml).
+`pages_1024/audio_test.yaml`.
 
 The test page is a diagnostic instrument rather than a final UI. It provides:
 
@@ -260,7 +264,7 @@ stereo playback is averaged to mono. Start with the same known-good MMR, FD
 low-cost, filter length, NLP, and optional-stage settings used for the hardware
 tests so reference type and delay are the only new variables.
 
-> [!WARNING]
+> **Warning**
 > A software reference will not work as well as a properly designed hardware
 > reference. It is copied before the DAC, volume control, amplifier, speaker,
 > enclosure, and acoustic path. It therefore does not contain their frequency
@@ -293,13 +297,13 @@ The best initial value comes from cross-correlation:
 
 1. Select a verified raw microphone slot so the AFE is bypassed.
 2. Use a repeatable, non-repeating calibration signal. This repository includes
-   [audio/aec_calibration.wav](../../audio/aec_calibration.wav) and
-   [tools/generate_aec_calibration.py](../../tools/generate_aec_calibration.py).
+   `audio/aec_calibration.wav` and
+   `tools/generate_aec_calibration.py`.
 3. Play that exact signal through the board at a clean, moderate volume.
 4. Capture the raw microphone to a file. The on-screen two-second capture is
    useful for listening, but an exported recording is needed for numerical
    cross-correlation. The repository's
-   [tools/record_mic.py](../../tools/record_mic.py) can be used where its host
+   `tools/record_mic.py` can be used where its host
    recording workflow is available.
 5. Cross-correlate the original playback samples with the microphone recording.
    The strongest physically plausible correlation peak gives the elapsed

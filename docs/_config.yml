@@ -1,0 +1,14 @@
+title: AEC Audio for ESPHome
+description: Full-duplex AEC voice-audio component for ESPHome on ESP32-S3 and ESP32-P4, built on Espressif's ESP-SR Audio Front-End
+baseurl: ""
+url: ""
+markdown: kramdown
+kramdown:
+  input: GFM
+permalink: pretty
+collections: {}
+defaults:
+- scope:
+    path: ""
+  values:
+    layout: default
