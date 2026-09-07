@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
+  <title id="title">Staged AEC board bring-up</title>
+  <desc id="desc">Seven numbered checkpoints progress from basic board operation through codec initialization, diagnostic audio, slot mapping, playback, reference verification, and final AFE evaluation.</desc>
+  <defs><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#16202b}.h{font-size:22px;font-weight:700}.l{font-size:16px;font-weight:650}.s{font-size:14px;fill:#52606d}.track{stroke:#cbd5e1;stroke-width:6}.node{fill:#fff;stroke:#0f766e;stroke-width:3}.num{font-size:20px;font-weight:700;fill:#0f766e}.gate{fill:#ecfdf5;stroke:#0f766e;stroke-width:2}</style></defs>
+  <text x="45" y="42" class="h">Prove each layer before judging echo cancellation</text>
+  <line x1="100" y1="145" x2="1100" y2="145" class="track"/>
+  <g><circle cx="100" cy="145" r="30" class="node"/><text x="100" y="152" text-anchor="middle" class="num">1</text><text x="100" y="205" text-anchor="middle" class="l">Board</text><text x="100" y="228" text-anchor="middle" class="s">boot · PSRAM</text></g>
+  <g><circle cx="267" cy="145" r="30" class="node"/><text x="267" y="152" text-anchor="middle" class="num">2</text><text x="267" y="205" text-anchor="middle" class="l">Codecs</text><text x="267" y="228" text-anchor="middle" class="s">I²C · clocks</text></g>
+  <g><circle cx="433" cy="145" r="30" class="node"/><text x="433" y="152" text-anchor="middle" class="num">3</text><text x="433" y="205" text-anchor="middle" class="l">Diagnostic hub</text><text x="433" y="228" text-anchor="middle" class="s">stable transport</text></g>
+  <g><circle cx="600" cy="145" r="30" class="node"/><text x="600" y="152" text-anchor="middle" class="num">4</text><text x="600" y="205" text-anchor="middle" class="l">RX slots</text><text x="600" y="228" text-anchor="middle" class="s">map both mics</text></g>
+  <g><circle cx="767" cy="145" r="30" class="node"/><text x="767" y="152" text-anchor="middle" class="num">5</text><text x="767" y="205" text-anchor="middle" class="l">Playback</text><text x="767" y="228" text-anchor="middle" class="s">clean TX audio</text></g>
+  <g><circle cx="933" cy="145" r="30" class="node"/><text x="933" y="152" text-anchor="middle" class="num">6</text><text x="933" y="205" text-anchor="middle" class="l">Reference</text><text x="933" y="228" text-anchor="middle" class="s">present · aligned</text></g>
+  <g><circle cx="1100" cy="145" r="30" class="node"/><text x="1100" y="152" text-anchor="middle" class="num">7</text><text x="1100" y="205" text-anchor="middle" class="l">Evaluate AFE</text><text x="1100" y="228" text-anchor="middle" class="s">AEC · double-talk</text></g>
+  <rect x="260" y="285" width="680" height="62" rx="12" class="gate"/><text x="600" y="312" text-anchor="middle" class="l">Stop at the first failed checkpoint</text><text x="600" y="334" text-anchor="middle" class="s">Later processing cannot repair missing, clipped, distorted, or incorrectly routed audio.</text>
+</svg>

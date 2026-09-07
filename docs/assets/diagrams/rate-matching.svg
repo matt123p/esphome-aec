@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Automatic host-to-satellite rate matching</title>
+  <desc id="desc">Without correction, a small host clock mismatch gradually fills or drains the playback buffer. With automatic rate matching, a multi-second estimate drives a gradual resampling correction and keeps the buffer near a stable level.</desc>
+  <defs><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#16202b}.h{font-size:22px;font-weight:700}.l{font-size:17px;font-weight:650}.s{font-size:15px;fill:#52606d}.axis{stroke:#94a3b8;stroke-width:2}.grid{stroke:#e2e8f0;stroke-width:1}.bad{fill:none;stroke:#dc2626;stroke-width:4}.good{fill:none;stroke:#0f766e;stroke-width:4}.window{fill:#dbeafe;opacity:.75}.node{fill:#fff;stroke:#cbd5e1;stroke-width:2}.link{stroke:#64748b;stroke-width:3}</style></defs>
+  <text x="45" y="40" class="h">A tiny clock difference becomes a large buffer error over time</text>
+  <text x="65" y="92" class="l">Without correction</text><line x1="65" y1="245" x2="535" y2="245" class="axis"/><line x1="65" y1="105" x2="65" y2="245" class="axis"/><line x1="65" y1="175" x2="535" y2="175" class="grid"/>
+  <path d="M65 185 C190 178 330 145 500 112" class="bad"/><text x="375" y="105" class="s">faster host: buffer fills</text>
+  <path d="M65 185 C210 190 350 215 500 238" class="bad" stroke-dasharray="8 7"/><text x="290" y="232" class="s">slower host: buffer drains</text>
+  <text x="45" y="175" transform="rotate(-90 45 175)" class="s">buffer level</text><text x="430" y="270" class="s">playback time</text>
+  <text x="665" y="92" class="l">With rate matching</text><line x1="665" y1="245" x2="1135" y2="245" class="axis"/><line x1="665" y1="105" x2="665" y2="245" class="axis"/><line x1="665" y1="175" x2="1135" y2="175" class="grid"/>
+  <rect x="665" y="105" width="130" height="140" class="window"/><text x="730" y="130" text-anchor="middle" class="s">estimate</text><text x="730" y="150" text-anchor="middle" class="s">host rate</text>
+  <path d="M665 185 C745 180 800 174 880 175 S1040 175 1110 175" class="good"/><text x="925" y="158" class="s">stable operating level</text>
+  <text x="645" y="175" transform="rotate(-90 645 175)" class="s">buffer level</text><text x="1030" y="270" class="s">playback time</text>
+  <rect x="155" y="340" width="210" height="75" rx="12" class="node"/><text x="260" y="370" text-anchor="middle" class="l">Host PCM cadence</text><text x="260" y="394" text-anchor="middle" class="s">multi-second estimate</text>
+  <line x1="365" y1="377" x2="495" y2="377" class="link"/><text x="430" y="363" text-anchor="middle" class="s">bounded target</text>
+  <rect x="495" y="340" width="210" height="75" rx="12" class="node"/><text x="600" y="370" text-anchor="middle" class="l">Gradual correction</text><text x="600" y="394" text-anchor="middle" class="s">one hertz per update</text>
+  <line x1="705" y1="377" x2="835" y2="377" class="link"/><text x="770" y="363" text-anchor="middle" class="s">linear interpolation</text>
+  <rect x="835" y="340" width="210" height="75" rx="12" class="node"/><text x="940" y="370" text-anchor="middle" class="l">16 kHz TDM output</text><text x="940" y="394" text-anchor="middle" class="s">fixed satellite clock</text>
+</svg>

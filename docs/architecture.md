@@ -9,6 +9,11 @@ the audio data flow through the wrapper. See
 [Hardware & Audio Design]({{ '/hardware/' | relative_url }}) for the physical
 signals these pipelines consume.
 
+![System diagram showing capture, ESP-SR processing, Home Assistant, playback, and the AEC feedback paths]({{ '/assets/diagrams/aec-system.svg' | relative_url }})
+
+*The capture and playback paths run together: the reference lets ESP-SR
+identify the device's own loudspeaker audio in the microphone signals.*
+
 ## The AFE pipeline
 
 Think of the AFE as a sequence of audio-cleaning stages between the physical
@@ -56,47 +61,10 @@ filters. Enabling every option is not necessarily better, and some combinations
 do not exist in Espressif's target-specific AFE binaries. Start with the
 known-good configuration before tuning one stage at a time.
 
-## Audio pipeline
-
-### Capture and processing
-
-```text
-TDM ADC (4 interleaved RX slots, 16-bit/16 kHz)
-  -> select microphone_slots[0] and microphone_slots[1]
-  -> obtain reference from reference_slot or playback reference buffer
-  -> arrange an ESP-SR MMR or MMNR interleaved frame
-  -> AEC
-  -> speech enhancement / dual-mic source processing (optional)
-  -> noise suppression (optional)
-  -> VAD and WakeNet (only when experimental wakenet is enabled)
-  -> automatic gain control (optional)
-  -> enhanced mono PCM
-  -> pre-roll and live microphone ring buffers
-  -> ESPHome microphone consumers
-```
-
-Each step has a specific job:
-
-1. **Full-duplex TDM RX** continuously reads four synchronized input slots.
-   The bus never has to switch between capture and playback.
-2. **Slot selection** extracts exactly two configured microphone slots. This
-   makes the logical microphones independent of the codec's physical slot map.
-3. **Reference acquisition** supplies the sound AEC should remove:
-   `analog_slot` reads it from the ADC, while `playback` uses a mono copy of
-   PCM accepted by the speaker endpoint.
-4. **AFE frame construction** produces either `MMR` (mic, mic, reference) or
-   `MMNR` (mic, mic, zero-filled unused channel, reference). ESP-SR requires
-   signed 16-bit, 16 kHz, channel-interleaved input.
-5. **AEC** estimates the echo path from reference to microphones and subtracts
-   it. The FD modes also apply nonlinear processing (NLP) to residual echo.
-6. **Speech enhancement** enables ESP-SR's dual-microphone enhancement stage.
-7. **Noise suppression** reduces mainly stationary, non-speech noise.
-8. **VAD/WakeNet** are both enabled only by `wakenet: true`. Normal use should
-   leave this experimental path off and run ESPHome Micro Wake Word on the
-   cleaned microphone instead.
-9. **AGC** raises weak output and limits stronger output toward the AFE target.
-10. **Publication** returns one enhanced mono channel. A one-second rolling
-    pre-roll is retained for fast wake-word-to-voice-assistant hand-off.
+If an AFE fetch fails, the component falls back to the first selected raw
+microphone channel for that frame and increments its dropped-frame counter.
+Setting `diagnostic_raw_slot` deliberately bypasses the AFE and publishes that
+raw slot as mono, which is useful for finding the physical TDM mapping.
 
 ## Rolling pre-buffer and wake-word hand-off
 
@@ -106,6 +74,8 @@ audio containing the beginning of the request. Stopping that listener and
 starting the voice assistant also takes time. Without a hand-off buffer, the
 speech-to-text stream can therefore begin late and lose a short command or the
 first word after the wake phrase.
+
+![Timeline showing the rolling history, wake-word hand-off, preserved request prefix, live audio, and excluded response tail]({{ '/assets/diagrams/prebuffer-timeline.svg' | relative_url }})
 
 The microphone wrapper avoids that gap with two bounded PSRAM buffers:
 
@@ -136,29 +106,21 @@ start of the user's next request. The integration must call the hand-off methods
 at the correct wake-word and voice-assistant lifecycle points; the microphone
 platform cannot infer those transitions on its own.
 
-If an AFE fetch fails, the component falls back to the first selected raw
-microphone channel for that frame and increments its dropped-frame counter. Setting
-`diagnostic_raw_slot` deliberately bypasses the AFE and publishes that raw slot
-as mono, which is useful for finding the physical TDM mapping.
+## Playback, automatic rate matching, and reference
 
-### Playback, automatic rate matching, and reference
+The ESPHome speaker accepts signed 16-bit, 16 kHz mono or stereo PCM and holds
+it in a one-second playback buffer. If automatic rate matching is enabled, the
+component makes a small timing correction before buffering the audio. Mono is
+duplicated into the two configured TX slots; stereo uses one slot for each
+channel. The four-slot TDM transmitter then carries those samples to the DAC,
+amplifier, and loudspeaker.
 
-```text
-ESPHome speaker (16-bit, 16 kHz, mono/stereo)
-  -> optional small drift-correction resampler
-  -> one-second playback ring buffer
-  -> copy/average to the software reference buffer (playback mode)
-  -> place samples in tx_slots[0] and tx_slots[1]
-  -> four-slot full-duplex TDM TX
-  -> DAC -> amplifier -> loudspeaker
-```
+When `reference_source: playback` is selected, the component also keeps a mono
+copy for the AEC reference. A stereo stream is averaged to produce that copy.
+With an analog reference, AEC instead uses the configured ADC slot and no
+playback copy is needed.
 
-Mono is duplicated into both TX slots. Stereo left and right go to the two TX
-slots and are averaged for a mono software reference. The resampler is only for
-small clock/source drift around 16 kHz; it is not a decoder or an arbitrary
-sample-rate converter.
-
-#### Why rate matching is needed
+### Why rate matching is needed
 
 The Home Assistant host and the satellite do not share an audio clock. The host
 may label its PCM as 16 kHz while delivering it at a sustained average rate that
@@ -167,6 +129,8 @@ Network packet timing can add short bursts and gaps, but over a long response a
 small underlying rate error steadily fills or drains the playback buffer. The
 eventual result is an overrun, underrun, click, or truncated audio even though a
 short response sounds correct.
+
+![Comparison of playback-buffer drift with and without automatic host-to-satellite rate matching]({{ '/assets/diagrams/rate-matching.svg' | relative_url }})
 
 With `resampler: true`, the component automatically matches the incoming host
 stream to the satellite clock:

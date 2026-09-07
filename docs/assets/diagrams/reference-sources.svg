@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 590" role="img" aria-labelledby="title desc">
+  <title id="title">Hardware and software AEC reference paths</title>
+  <desc id="desc">A hardware reference is sampled from the analog playback chain and returns through the ADC beside the microphones. A software reference copies PCM before the DAC, so it omits changes introduced by the DAC, amplifier, loudspeaker, enclosure, and room.</desc>
+  <defs><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#16202b}.h{font-size:22px;font-weight:700}.l{font-size:18px;font-weight:650}.s{font-size:15px;fill:#52606d}.node{fill:#fff;stroke:#cbd5e1;stroke-width:2}.good{fill:#ecfdf5;stroke:#0f766e}.limited{fill:#fff7ed;stroke:#d97706}.afe{fill:#eff6ff;stroke:#2563eb}.line{stroke:#64748b;stroke-width:3;fill:none}.tap{stroke:#0f766e;stroke-width:4;fill:none}.copy{stroke:#d97706;stroke-width:4;fill:none;stroke-dasharray:9 7}</style></defs>
+  <text x="45" y="42" class="h">Hardware reference · preferred</text>
+  <rect x="45" y="75" width="150" height="70" rx="12" class="node"/><text x="120" y="117" text-anchor="middle" class="l">PCM</text>
+  <rect x="245" y="75" width="150" height="70" rx="12" class="node"/><text x="320" y="117" text-anchor="middle" class="l">DAC</text>
+  <rect x="445" y="75" width="150" height="70" rx="12" class="node"/><text x="520" y="117" text-anchor="middle" class="l">Amplifier</text>
+  <rect x="645" y="75" width="150" height="70" rx="12" class="node"/><text x="720" y="117" text-anchor="middle" class="l">Speaker</text>
+  <rect x="845" y="75" width="150" height="70" rx="12" class="node"/><text x="920" y="107" text-anchor="middle" class="l">Enclosure</text><text x="920" y="129" text-anchor="middle" class="s">and room</text>
+  <path d="M195 110H245M395 110H445M595 110H645M795 110H845" class="line"/>
+  <rect x="430" y="195" width="180" height="76" rx="12" class="node good"/><text x="520" y="224" text-anchor="middle" class="l">Analog tap + ADC</text><text x="520" y="249" text-anchor="middle" class="s">synchronized TDM slot</text>
+  <rect x="765" y="195" width="190" height="76" rx="12" class="node afe"/><text x="860" y="224" text-anchor="middle" class="l">ESP-SR AFE</text><text x="860" y="249" text-anchor="middle" class="s">reference input</text>
+  <path d="M520 145V195M610 233H765" class="tap"/><text x="625" y="218" class="s">includes more of the real playback path</text>
+  <line x1="45" y1="320" x2="1155" y2="320" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="45" y="370" class="h">Software reference · fallback</text>
+  <rect x="45" y="405" width="150" height="70" rx="12" class="node limited"/><text x="120" y="433" text-anchor="middle" class="l">PCM copy</text><text x="120" y="457" text-anchor="middle" class="s">before DAC</text>
+  <rect x="245" y="405" width="150" height="70" rx="12" class="node"/><text x="320" y="447" text-anchor="middle" class="l">DAC</text>
+  <rect x="445" y="405" width="150" height="70" rx="12" class="node"/><text x="520" y="447" text-anchor="middle" class="l">Amplifier</text>
+  <rect x="645" y="405" width="150" height="70" rx="12" class="node"/><text x="720" y="447" text-anchor="middle" class="l">Speaker</text>
+  <rect x="845" y="405" width="150" height="70" rx="12" class="node"/><text x="920" y="437" text-anchor="middle" class="l">Enclosure</text><text x="920" y="459" text-anchor="middle" class="s">and room</text>
+  <path d="M195 440H245M395 440H445M595 440H645M795 440H845" class="line"/>
+  <rect x="45" y="505" width="190" height="58" rx="12" class="node afe"/><text x="140" y="540" text-anchor="middle" class="l">ESP-SR AFE</text>
+  <path d="M120 475V505" class="copy"/><text x="270" y="535" class="s">does not contain DAC, amplifier, speaker, enclosure, or acoustic effects</text>
+</svg>

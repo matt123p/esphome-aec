@@ -69,6 +69,11 @@ drives all four slots. Before buying a board or codec, verify in its datasheet
 and schematic that it can operate in this mode and that its slot positions are
 configurable or documented.
 
+![Four-slot TDM receive and transmit mapping used by the Waveshare 7B reference configuration]({{ '/assets/diagrams/tdm-slots.svg' | relative_url }})
+
+*This is the verified Waveshare 7B mapping. Other boards can place the same
+signals in different slots.*
+
 Do not choose hardware based only on a feature list saying “dual microphone” or
 “AEC.” Check the schematic and codec documentation for all of the following:
 
@@ -120,6 +125,8 @@ speaker. Without a strong, correctly timed reference, the AFE cannot distinguish
 speaker echo from the user's voice and cancellation will be poor.
 
 This component can obtain the reference in two ways.
+
+![Comparison between hardware and software AEC reference paths]({{ '/assets/diagrams/reference-sources.svg' | relative_url }})
 
 ### Hardware or analog reference (`analog_slot`)
 

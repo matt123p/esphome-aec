@@ -8,6 +8,8 @@ Porting `aec_audio` to a new board is primarily a hardware-validation exercise.
 Display, networking, codec control, raw capture, playback, and the AEC reference
 are separate systems; prove each one before evaluating echo cancellation.
 
+![Seven-stage board bring-up sequence from basic boot through final AFE evaluation]({{ '/assets/diagrams/bring-up-stages.svg' | relative_url }})
+
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-7B settings in the
 [installation guide]({{ '/getting-started/' | relative_url }}) are the tested
 reference. Do not copy its GPIOs or TDM slots to a similar-looking board without
