@@ -27,7 +27,11 @@ Until that support is merged, load the implementation from ESPHome pull request
 
 ```yaml
 external_components:
-  - source: github://pr#18954
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome
+      ref: feature/es7210-aec-fix
+      path: esphome/components
     components: [es7210]
 ```
 
@@ -93,7 +97,11 @@ external_components:
       ref: main
       path: src/esphome
     components: [aec_audio]
-  - source: github://pr#18954
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome
+      ref: feature/es7210-aec-fix
+      path: esphome/components
     components: [es7210]
 
 i2c:

@@ -25,7 +25,11 @@ external_components:
       path: src/esphome
     components: [aec_audio]
   # Required until ES7210 four-channel TDM support is merged into ESPHome.
-  - source: github://pr#18954
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome
+      ref: feature/es7210-aec-fix
+      path: esphome/components
     components: [es7210]
 
 esp32:
