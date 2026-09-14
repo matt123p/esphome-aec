@@ -147,7 +147,9 @@ aec_audio:
   afe_input_format: mmr
   aec_mode: fd_low_cost
   nlp_level: normal
-  filter_length: 4
+  filter_length: 12
+  # Prevent the hardware reference from clipping near full-scale playback.
+  playback_gain_db: -12
   agc: true
   noise_suppression: true
   speech_enhancement: true
@@ -173,7 +175,8 @@ paired ESP-IDF TDM RX/TX channels; the speaker child does not take an
 
 Keep the AFE-related values in this example together for the first successful
 bring-up. In particular, start with `afe_input_format: mmr`,
-`aec_mode: fd_low_cost`, `filter_length: 4`, and `wakenet: false`. After the
+`aec_mode: fd_low_cost`, `filter_length: 12`, `playback_gain_db: -12`, and
+`wakenet: false`. After the
 baseline works, alter only one option per test and check the startup log. The
 fact that an option appears in the [configuration reference]({{ '/configuration/' | relative_url }}) means the component
 can request it; it does not guarantee that ESP-SR implements every combination

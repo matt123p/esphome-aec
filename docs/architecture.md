@@ -109,7 +109,10 @@ platform cannot infer those transitions on its own.
 ## Playback, automatic rate matching, and reference
 
 The ESPHome speaker accepts signed 16-bit, 16 kHz mono or stereo PCM and holds
-it in a one-second playback buffer. If automatic rate matching is enabled, the
+it in a one-second playback buffer. `playback_gain_db` attenuates each sample
+before both the TDM output and playback-reference tap, so the reference remains
+identical to what is sent to the DAC while preserving headroom in the analogue
+amplifier/loopback path. If automatic rate matching is enabled, the
 component makes a small timing correction before buffering the audio. Mono is
 duplicated into the two configured TX slots; stereo uses one slot for each
 channel. The four-slot TDM transmitter then carries those samples to the DAC,

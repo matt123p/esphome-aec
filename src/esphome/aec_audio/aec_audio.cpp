@@ -89,6 +89,23 @@ void AECAudioComponent::setup() {
     }
   }
 
+  if (this->playback_gain_db_ < 0.0f) {
+    this->playback_gain_ = std::pow(10.0f, this->playback_gain_db_ / 20.0f);
+    ESP_LOGI(TAG, "Playback digital gain: %.1f dB (%.3fx)", this->playback_gain_db_, this->playback_gain_);
+  }
+
+  if (this->reference_source_ == AEC_AUDIO_REFERENCE_ANALOG_SLOT) {
+    this->reference_delay_.store(this->reference_delay_samples_);
+    if (this->reference_delay_samples_ > 0) {
+      ESP_LOGI(TAG, "Analog reference delay: %u samples (%" PRIu32 " ms)",
+               static_cast<unsigned>(this->reference_delay_samples_),
+               static_cast<uint32_t>(this->reference_delay_samples_) * 1000 / SAMPLE_RATE);
+    }
+  }
+#ifdef USE_AEC_AUDIO_CALIBRATION
+  this->calibration.set_delay_source(&this->reference_delay_);
+#endif
+
   // Capture buffer in PSRAM: CAPTURE_SECONDS * 16000 samples * 2 bytes
   this->capture_buffer_ = static_cast<int16_t *>(
       heap_caps_aligned_alloc(16, CAPTURE_FRAMES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -135,17 +152,21 @@ void AECAudioComponent::dump_config() {
                 "  Diagnostic raw slot: %d\n"
                 "  Processing: ESP-SR dual-microphone %s AFE, mono output duplicated to stereo\n"
                 "  AGC: %s\n"
-                "  AEC filter length: %u",
+                "  AEC filter length: %u\n"
+                "  Playback digital gain: %.1f dB",
                 this->i2s_port_, this->mclk_pin_, this->bclk_pin_, this->lrclk_pin_, this->din_pin_, this->dout_pin_,
                 this->tdm_slots_, this->microphone_slots_[0], this->microphone_slots_[1],
                 this->reference_source_ == AEC_AUDIO_REFERENCE_PLAYBACK ? "playback buffer" : "analog TDM",
                 this->reference_slot_, this->tx_slots_[0], this->tx_slots_[1], this->diagnostic_raw_slot_.load(),
                 this->afe_include_unused_channel_ ? "MMNR" : "MMR",
                 YESNO(this->agc_enabled_),
-                this->filter_length_);
+                this->filter_length_, this->playback_gain_db_);
 }
 
 void AECAudioComponent::loop() {
+#ifdef USE_AEC_AUDIO_CALIBRATION
+  this->calibration.loop();
+#endif
   if (millis() - this->last_input_rate_log_ >= INPUT_RATE_LOG_INTERVAL_MS) {
     const uint32_t now = millis();
     const size_t requested_bytes = this->play_requested_bytes_.load();
@@ -436,6 +457,9 @@ void AECAudioComponent::run_audio_task_() {
       }
     }
 
+    if (this->reference_source_ == AEC_AUDIO_REFERENCE_ANALOG_SLOT)
+      this->apply_reference_delay_(ref, frame_size);
+
     uint64_t reference_sum_sq = 0;
     int32_t reference_peak = 0;
     for (size_t frame = 0; frame < frame_size; frame++) {
@@ -494,6 +518,10 @@ void AECAudioComponent::run_audio_task_() {
       std::memcpy(out, mic, planar_samples * sizeof(int16_t));
       this->dropped_frames_++;
     }
+
+#ifdef USE_AEC_AUDIO_CALIBRATION
+    this->calibration.capture(mic, ref, out, frame_size, afe_result_valid && diagnostic_raw_slot < 0);
+#endif
 
 #ifdef USE_AEC_AUDIO_SLOT_LOGS
     if (log_slots) {
@@ -627,6 +655,19 @@ void AECAudioComponent::run_playback_task_() {
       }
     }
 
+    // Apply attenuation before both I2S TX and the playback reference tap.
+    // The calibration probe replaces this buffer below at its own safe level.
+    if (this->playback_gain_ != 1.0f && playback_bytes > 0) {
+      const size_t samples = playback_bytes / sizeof(int16_t);
+      for (size_t i = 0; i < samples; ++i)
+        playback[i] = static_cast<int16_t>(std::lround(static_cast<float>(playback[i]) * this->playback_gain_));
+    }
+
+#ifdef USE_AEC_AUDIO_CALIBRATION
+    if (this->calibration.render(playback, frame_size, channels))
+      playback_bytes = requested_playback_bytes;
+#endif
+
     std::memset(tx, 0, raw_bytes);
     std::memset(reference, 0, frame_size * sizeof(int16_t));
     size_t available_frames = playback_bytes / (channels * sizeof(int16_t));
@@ -664,6 +705,18 @@ void AECAudioComponent::run_playback_task_() {
       if (available_frames > 0 && this->speaker_ != nullptr)
         this->speaker_->notify_output(available_frames, esp_timer_get_time());
     }
+  }
+}
+
+void AECAudioComponent::apply_reference_delay_(int16_t *ref, size_t frames) {
+  const int delay = this->reference_delay_.load();
+  if (delay <= 0)
+    return;
+  constexpr int size = REFERENCE_DELAY_MAX_SAMPLES + 1;
+  for (size_t i = 0; i < frames; ++i) {
+    this->reference_history_[this->reference_history_pos_] = ref[i];
+    ref[i] = this->reference_history_[(this->reference_history_pos_ + size - delay) % size];
+    this->reference_history_pos_ = (this->reference_history_pos_ + 1) % size;
   }
 }
 

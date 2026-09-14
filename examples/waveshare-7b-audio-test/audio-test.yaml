@@ -124,8 +124,13 @@ aec_audio:
   afe_input_format: mmr
   agc: true
   nlp_level: normal
-  filter_length: 4
-  resampler: true
+  filter_length: 12
+  # The hardware reference clips when playback approaches full scale even at
+  # its minimum ADC gain, so retain 12 dB of digital headroom.
+  playback_gain_db: -12
+  calibration: true
+  # Keep the known-rate calibration probe at exactly 16 kHz.
+  resampler: false
   wakenet: false
   meters:
     id: audio_test_meters
@@ -158,6 +163,40 @@ media_player:
       - lambda: |-
           id(audio_test_playing) = false;
           lv_label_set_text(audio_test_playback_label, "PLAY TEST AUDIO");
+
+button:
+  - platform: template
+    id: start_aec_calibration
+    name: "Auto-tune AEC (keep silent)"
+    on_press:
+      - media_player.stop:
+          id: audio_test_player
+          announcement: true
+      - lambda: |-
+          id(audio_test_source) = -1;
+          lv_label_set_text(audio_test_source_label, "Selected source: AFE output");
+          id(audio_test).set_diagnostic_raw_slot(-1);
+          id(audio_test).clear_playback();
+          id(audio_test).calibration.start();
+  - platform: template
+    id: cancel_aec_calibration
+    name: "Cancel AEC auto-tune"
+    on_press:
+      - lambda: id(audio_test).calibration.cancel();
+
+text_sensor:
+  - platform: template
+    name: "AEC calibration status"
+    update_interval: 1s
+    lambda: return std::string(id(audio_test).calibration.status());
+
+sensor:
+  - platform: template
+    name: "AEC calibrated reference delay"
+    unit_of_measurement: "ms"
+    accuracy_decimals: 4
+    update_interval: 1s
+    lambda: return id(audio_test).calibration.delay() / 16.0f;
 
 switch:
   - platform: gpio

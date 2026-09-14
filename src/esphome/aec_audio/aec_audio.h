@@ -22,6 +22,9 @@
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/core/component.h"
+#ifdef USE_AEC_AUDIO_CALIBRATION
+#include "calibration.h"
+#endif
 
 namespace esphome {
 
@@ -137,6 +140,9 @@ class AECAudioMetersComponent : public Component, public AECAudioMetersCallback 
 
 class AECAudioComponent : public Component {
  public:
+#ifdef USE_AEC_AUDIO_CALIBRATION
+  AECCalibration calibration;
+#endif
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
   void setup() override;
   void dump_config() override;
@@ -165,6 +171,7 @@ class AECAudioComponent : public Component {
   void set_microphone(AECAudioMicrophone *microphone) { this->microphone_ = microphone; }
   void set_speaker(AECAudioSpeaker *speaker) { this->speaker_ = speaker; }
   void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
+  void set_playback_gain_db(float db) { this->playback_gain_db_ = db; }
   void set_noise_suppression_enabled(bool enabled) { this->noise_suppression_enabled_ = enabled; }
   void set_speech_enhancement_enabled(bool enabled) { this->speech_enhancement_enabled_ = enabled; }
   void set_wakenet_enabled(bool enabled) { this->wakenet_enabled_ = enabled; }
@@ -187,6 +194,7 @@ class AECAudioComponent : public Component {
   size_t play_capture();
   static const size_t CAPTURE_SECONDS = 3;
   static const size_t CAPTURE_FRAMES = CAPTURE_SECONDS * 16000;  // 16 kHz mono
+  static constexpr int REFERENCE_DELAY_MAX_SAMPLES = 256;
 
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait);
   bool has_buffered_data() const;
@@ -201,6 +209,7 @@ class AECAudioComponent : public Component {
   void run_playback_task_();
   void publish_frame_(const int16_t *raw, size_t frames);
   void capture_frame_(const int16_t *mono, size_t frames);
+  void apply_reference_delay_(int16_t *ref, size_t frames);
 #ifdef USE_AEC_AUDIO_PLAYBACK_RESAMPLER
   std::vector<int16_t> resample(const int16_t *input, size_t frames, uint8_t channels);
   void initialise_resampler();
@@ -240,6 +249,11 @@ class AECAudioComponent : public Component {
   bool agc_enabled_{true};
   bool afe_include_unused_channel_{true};
   uint16_t reference_delay_samples_{0};
+  float playback_gain_db_{0.0f};
+  float playback_gain_{1.0f};
+  std::atomic<int> reference_delay_{0};
+  int16_t reference_history_[REFERENCE_DELAY_MAX_SAMPLES + 1]{};
+  size_t reference_history_pos_{0};
   bool noise_suppression_enabled_{true};
   bool speech_enhancement_enabled_{true};
   bool wakenet_enabled_{false};

@@ -19,6 +19,10 @@ delivery rate and the satellite's fixed 16 kHz audio clock, improving stability
 during long spoken responses. See
 [How It Works](https://matt123p.github.io/esphome-aec/architecture/#playback-automatic-rate-matching-and-reference).
 
+Playback is digitally attenuated by 12 dB before the DAC and AEC reference tap
+because the board's hardware reference can otherwise clip near full scale. The
+AEC filter length is set to 12 samples, matching the tested Waveshare baseline.
+
 ## Use it
 
 1. Copy `secrets.yaml.example` to `secrets.yaml` and enter your Wi-Fi details.

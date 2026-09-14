@@ -117,7 +117,8 @@ For `reference_source: analog_slot`, test the proposed slot in diagnostic mode.
 It should be quiet when playback is stopped, closely follow playback when it is
 active, and respond little to room speech. A spare or microphone-connected ADC
 channel is not a playback reference. Set the verified slot as `reference_slot`
-and keep `reference_delay_samples: 0`.
+and begin with `reference_delay_samples: 0`. Analog-reference delays up to 256
+samples (16 ms) can be tested with the audio example's auto-tune facility.
 
 If the board has no hardware feedback path, use:
 
@@ -172,8 +173,10 @@ for the repeatable test procedure.
 - **Reference behaves like a microphone:** the proposed ADC input is not a real
   playback feedback path; inspect the schematic.
 - **AEC fails only at high volume:** the speaker, amplifier, reference input, or
-  microphone ADC is probably clipping or nonlinear. Lower gain or improve the
-  physical audio path.
+  microphone ADC is probably clipping or nonlinear. Set `playback_gain_db` to
+  retain digital headroom (the Waveshare example uses `-12`), lower analogue
+  gain if possible, or improve the physical audio path. Once a sample is clipped,
+  AEC and AGC cannot recover it.
 
 Keep the final board revision, codec addresses, pins, verified RX/TX slots,
 gains, maximum clean playback volume, ESPHome version, and AFE settings with the

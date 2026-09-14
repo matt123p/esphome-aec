@@ -14,6 +14,7 @@ CONF_AGC = "agc"
 CONF_AFE_INPUT_FORMAT = "afe_input_format"
 CONF_AUDIO_ADC = "audio_adc"
 CONF_BCLK_PIN = "bclk_pin"
+CONF_CALIBRATION = "calibration"
 CONF_DIAGNOSTIC_RAW_SLOT = "diagnostic_raw_slot"
 CONF_DIN_PIN = "din_pin"
 CONF_DOUT_PIN = "dout_pin"
@@ -24,6 +25,7 @@ CONF_MCLK_PIN = "mclk_pin"
 CONF_MICROPHONE_SLOTS = "microphone_slots"
 CONF_METERS = "meters"
 CONF_NLP_LEVEL = "nlp_level"
+CONF_PLAYBACK_GAIN_DB = "playback_gain_db"
 CONF_REFERENCE_SLOT = "reference_slot"
 CONF_REFERENCE_SOURCE = "reference_source"
 CONF_REFERENCE_DELAY_SAMPLES = "reference_delay_samples"
@@ -69,11 +71,8 @@ def _validate_slots(config):
         raise cv.Invalid("Microphone slots must be distinct")
     if config[CONF_REFERENCE_SOURCE] == "analog_slot" and reference in selected:
         raise cv.Invalid("The analog reference slot must not also be a microphone slot")
-    if (
-        config[CONF_REFERENCE_SOURCE] == "analog_slot"
-        and config[CONF_REFERENCE_DELAY_SAMPLES] != 0
-    ):
-        raise cv.Invalid("reference_delay_samples must be zero when using an analog reference slot")
+    if config[CONF_REFERENCE_SOURCE] == "analog_slot" and config[CONF_REFERENCE_DELAY_SAMPLES] > 256:
+        raise cv.Invalid("reference_delay_samples supports 0-256 with an analog reference slot")
     return config
 
 
@@ -107,6 +106,8 @@ CONFIG_SCHEMA = cv.All(
                 NLP_LEVELS, lower=True
             ),
             cv.Optional(CONF_FILTER_LENGTH, default=4): cv.int_range(min=1, max=16),
+            cv.Optional(CONF_PLAYBACK_GAIN_DB, default=0.0): cv.float_range(min=-60.0, max=0.0),
+            cv.Optional(CONF_CALIBRATION, default=False): cv.boolean,
             cv.Optional(CONF_REFERENCE_DELAY_SAMPLES, default=0): cv.int_range(min=0, max=4000),
             cv.Optional(CONF_RESAMPLER, default=False): cv.boolean,
             cv.Optional(CONF_NOISE_SUPPRESSION, default=True): cv.boolean,
@@ -133,6 +134,8 @@ async def to_code(config):
         cg.add_define("USE_AEC_AUDIO_SLOT_LOGS")
     if config.get("diagnostics", False):
         cg.add_define("USE_AEC_AUDIO_DIAGNOSTICS")
+    if config[CONF_CALIBRATION]:
+        cg.add_define("USE_AEC_AUDIO_CALIBRATION")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -158,6 +161,7 @@ async def to_code(config):
     cg.add(var.set_afe_include_unused_channel(config[CONF_AFE_INPUT_FORMAT] == "mmnr"))
     cg.add(var.set_nlp_level(config[CONF_NLP_LEVEL]))
     cg.add(var.set_filter_length(config[CONF_FILTER_LENGTH]))
+    cg.add(var.set_playback_gain_db(config[CONF_PLAYBACK_GAIN_DB]))
     if config[CONF_RESAMPLER]:
         cg.add_define("USE_AEC_AUDIO_PLAYBACK_RESAMPLER")
     cg.add(var.set_reference_delay_samples(config[CONF_REFERENCE_DELAY_SAMPLES]))

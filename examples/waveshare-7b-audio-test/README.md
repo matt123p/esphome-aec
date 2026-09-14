@@ -29,6 +29,15 @@ The 1024×600 touch UI can:
    AFE output substantially reduces it.
 5. Speak during playback and confirm that near-end speech remains intelligible.
 
+The example uses `playback_gain_db: -12` because the board's hardware reference
+can clip near full-scale DAC playback even at its minimum ADC gain. It also uses
+an AEC filter length of 12 samples.
+
+To tune analogue-reference delay, press **Auto-tune AEC (keep silent)** in Home
+Assistant and remain silent while the probe plays. Watch the calibration status
+and delay sensors; a successful result is RAM-only, so copy its sample value to
+`reference_delay_samples` after confirming it with playback and double-talk.
+
 The configuration loads ES7210 TDM support from ESPHome pull request 18954
 until that change is merged. If it has since landed in your ESPHome release,
 remove that `external_components` entry.
@@ -36,10 +45,6 @@ remove that `external_components` entry.
 The included `test-audio.wav` is used only as a repeatable signal for playback
 and cancellation tests.
 
-This example enables `resampler: true`, so playback also uses the component's
-automatic host-to-satellite rate matching. It measures small sustained
-differences between incoming nominal 16 kHz PCM and the board's physical TDM
-clock, then gradually interpolates the stream to prevent long playback from
-draining or filling the buffer. See the
-[rate-matching documentation](https://matt123p.github.io/esphome-aec/architecture/#playback-automatic-rate-matching-and-reference)
-for details.
+The diagnostic example disables the resampler so its generated calibration
+probe remains at a known 16 kHz rate. The voice-assistant example enables rate
+matching for long streamed responses.

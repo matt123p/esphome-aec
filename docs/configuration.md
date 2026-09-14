@@ -24,12 +24,14 @@ setting at a time.
 | `microphone_slots` | no | `[0, 1]` | Two distinct RX slots, each from `0` to `3`. |
 | `reference_source` | no | `analog_slot` | `analog_slot` uses captured ADC data; `playback` uses speaker PCM. |
 | `reference_slot` | no | `2` | RX slot used only by `analog_slot`. It must differ from both microphone slots. |
-| `reference_delay_samples` | no | `0` | Software-reference delay, `0`–`4000` samples. Must be `0` with `analog_slot`. At 16 kHz, 16 samples = 1 ms. |
+| `reference_delay_samples` | no | `0` | Reference delay, `0`–`4000` samples for `playback` or `0`–`256` for `analog_slot`. At 16 kHz, 16 samples = 1 ms. |
 | `tx_slots` | no | `[0, 1]` | Two TDM TX slots, each from `0` to `3`. |
 | `afe_input_format` | no | `mmnr` | `mmr` feeds mic/mic/reference; `mmnr` inserts a zero unused channel before the reference. Use the shape supported by the selected ESP-SR target/build. |
 | `aec_mode` | no | `fd_low_cost` | `fd_low_cost` or `fd_high_perf`. Start with low cost; high performance uses more PSRAM. |
 | `nlp_level` | no | `aggressive` | `normal`, `aggressive`, or `very_aggressive`. More suppression can damage near-end speech. |
 | `filter_length` | no | `4` | AEC filter length from `1` to `16`. Longer filters cover longer echo tails but use more resources. |
+| `playback_gain_db` | no | `0` | Digital attenuation from `-60` to `0` dB, applied before I2S TX and the reference tap. Use it to prevent DAC/amplifier/reference-loopback clipping. |
+| `calibration` | no | `false` | Compile the optional analogue-reference delay auto-tuner and expose its C++ API. Intended for diagnostic firmware; it allocates about 64 KB of PSRAM when started. |
 | `agc` | no | `true` | Enable AFE automatic gain control. |
 | `noise_suppression` | no | `true` | Enable AFE noise suppression. |
 | `speech_enhancement` | no | `true` | Enable the dual-microphone speech-enhancement stage. |
@@ -124,3 +126,9 @@ records up to three seconds of cleaned mono audio into PSRAM;
 `get_capture_state()` and `get_capture_frames()` report progress; and
 `play_capture()` queues the recording to the speaker. There are currently no
 native ESPHome actions for this API.
+
+With `calibration: true`, the hub additionally exposes `calibration.start()`,
+`calibration.cancel()`, `calibration.status()`, and `calibration.delay()` to
+lambdas. Calibration is deliberately opt-in and never runs at boot. See
+[Testing & Tuning]({{ '/tuning/' | relative_url }}#5-align-the-reference) for
+the ready-made Waveshare controls and the validation procedure.

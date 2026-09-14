@@ -73,7 +73,16 @@ signed 16-bit, nominally 16 kHz PCM before it reaches the speaker. If the
 estimated rate repeatedly reaches the 15 kHz or 17 kHz limit, investigate the
 source and transport rather than treating the limit as normal clock drift.
 
-## 4. Align a software reference
+## 4. Prevent reference clipping
+
+Clipping must be fixed before delay or AFE tuning. A reference channel that
+reaches digital full scale has lost information, even if its ADC gain is already
+at minimum. Use `playback_gain_db` to attenuate media before it reaches both the
+DAC and reference tap. The Waveshare 7B examples use `-12` dB because its
+hardware loopback clips when the DAC is driven close to full scale. Re-test the
+speaker and raw reference at the loudest intended setting after changing it.
+
+## 5. Align the reference
 
 With `reference_source: playback`, the reference must line up with the echo at
 the microphones. `reference_delay_samples` pre-fills the reference ring buffer
@@ -88,10 +97,28 @@ Useful starting points are 512 samples (32 ms), 1024 (64 ms), 1600 (100 ms),
 and 2048 (128 ms). Play a deterministic, non-repeating calibration signal,
 record a raw microphone slot, and cross-correlate the recording with the source
 WAV. Use the correlation peak as the initial delay, then sweep nearby values
-while measuring and listening. Delay is not configurable for an analog slot
-because that signal arrives synchronously in the captured TDM frame.
+while measuring and listening.
 
-## 5. Measure cancellation and double-talk
+For an analogue reference, delay may be adjusted from 0 to 256 samples (16 ms).
+The Waveshare audio-test example can determine a useful value automatically:
+
+1. Flash the audio-test example and leave the board in its normal enclosure and
+   position.
+2. In Home Assistant press **Auto-tune AEC (keep silent)** and remain silent for
+   roughly 30–60 seconds while its bounded broadband probe plays.
+3. Watch **AEC calibration status** and **AEC calibrated reference delay**. The
+   test rejects clipped/quiet inputs, weak correlation, processing failures,
+   boundary results, and timeouts.
+4. Confirm a retained result with playback-only and double-talk tests, then copy
+   the reported sample value into `reference_delay_samples` in production YAML.
+
+The result is RAM-only and calibration never starts automatically. The routine
+tests zero plus candidate delays derived from both microphones, then retains a
+delay only when a repeat trial reduces correlated leakage without materially
+increasing total residual output. Press **Cancel AEC auto-tune** to stop the
+probe and restore the pre-test delay.
+
+## 6. Measure cancellation and double-talk
 
 Enable `telemetry: true`, play a repeatable speech/noise clip, and compare its
 `AEC_EFFECT` lines. Effective cancellation normally reduces cleaned/reference
@@ -104,7 +131,7 @@ Tune in this order:
 1. correct slot mapping and unclipped ADC/DAC levels;
 2. correct reference source and delay;
 3. `nlp_level`, starting with `normal` or `aggressive`;
-4. `filter_length`, starting at `4`;
+4. `filter_length`, starting at `12` on the Waveshare 7B;
 5. `fd_high_perf` only if the low-cost pipeline is stable and insufficient;
 6. optional noise suppression, speech enhancement, AGC, meters, and resampling.
 
