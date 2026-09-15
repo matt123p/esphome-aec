@@ -128,13 +128,20 @@ void AECAudioComponent::setup() {
     return;
   }
 
-  if (xTaskCreatePinnedToCore(AECAudioComponent::playback_task, "aec_playback", 4096, this, 20, &this->playback_task_handle_, 0) !=
+  // ESPHome creates loopTask on CPU 1. Keep the expensive AFE on CPU 0 so a
+  // long echo filter cannot prevent loopTask from feeding its watchdog or
+  // forwarding processed microphone audio to the API. Playback mostly blocks
+  // in its I2S write and remains on CPU 1, separate from the canceller.
+  if (xTaskCreatePinnedToCore(AECAudioComponent::playback_task, "aec_playback", 4096, this, 20, &this->playback_task_handle_, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Could not start playback task");
     this->mark_failed();
     return;
   }
-  if (xTaskCreatePinnedToCore(AECAudioComponent::audio_task, "aec_audio", 8192, this, 19, &this->audio_task_handle_, 0) != pdPASS) {
+  // ESP-SR creates its AFE worker on CPU 0 at priority 5. This wrapper feeds
+  // that worker and waits for its output, so it must remain below priority 5;
+  // otherwise a long filter repeatedly preempts the worker it depends on.
+  if (xTaskCreatePinnedToCore(AECAudioComponent::audio_task, "aec_audio", 8192, this, 4, &this->audio_task_handle_, 0) != pdPASS) {
     ESP_LOGE(TAG, "Could not start audio task");
     this->mark_failed();
   }
@@ -613,6 +620,12 @@ void AECAudioComponent::run_audio_task_() {
 #endif
     this->publish_frame_(out, frame_size);
     this->capture_frame_(out, frame_size);   // capture mono channel 0 (AFE output)
+
+    // Do not monopolise CPU 0 when AFE processing exceeds the frame period.
+    // Yield to the ESP-SR worker and other system tasks; an I2S overflow is
+    // preferable to starving the system until the watchdog fires.
+    if (processing_us > frame_size * 1000000u / SAMPLE_RATE)
+      vTaskDelay(1);
   }
 }
 
@@ -1051,35 +1064,35 @@ void AECAudioMicrophone::loop() {
              heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  // At most 32 ms per pass, with no catch-up burst after a blocked main loop.
-  // A 16 ms minimum allows backlog recovery when the loop has spare capacity.
+  // A 16 ms minimum gives normal operation enough capacity for 16 kHz mono.
+  // After a short UI/main-loop stall, drain a bounded number of queued blocks
+  // so voice upload catches up rather than permanently losing wall-clock rate.
   if (now - this->last_delivery_ms_ < 16)
     return;
-  xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
-  if (this->listeners_ == 0 || this->pre_roll_requested_) {
+  constexpr size_t MAX_DELIVERIES_PER_LOOP = 16;
+  for (size_t delivery = 0; delivery < MAX_DELIVERIES_PER_LOOP; ++delivery) {
+    xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+    if (this->listeners_ == 0 || this->pre_roll_requested_) {
+      xSemaphoreGive(this->buffer_mutex_);
+      break;
+    }
+    const size_t count = std::min(this->buffered_bytes_, DELIVERY_BYTES);
+    if (count == 0) {
+      xSemaphoreGive(this->buffer_mutex_);
+      break;
+    }
+    this->vec.resize(count);
+    const size_t first = std::min(count, BUFFER_BYTES - this->read_offset_);
+    memcpy(this->vec.data(), this->buffer_ + this->read_offset_, first);
+    memcpy(this->vec.data() + first, this->buffer_, count - first);
+    this->read_offset_ = (this->read_offset_ + count) % BUFFER_BYTES;
+    this->buffered_bytes_ -= count;
+    this->queue_start_byte_ += count;
+    if (!this->utterance_active_) {
+      this->last_detector_byte_ = this->queue_start_byte_;
+      this->detector_position_valid_ = true;
+    }
     xSemaphoreGive(this->buffer_mutex_);
-    return;
-  }
-  const size_t count = std::min(this->buffered_bytes_, DELIVERY_BYTES);
-  if (count == 0) {
-    xSemaphoreGive(this->buffer_mutex_);
-    return;
-  }
-  this->vec.resize(count);
-  const size_t first = std::min(count, BUFFER_BYTES - this->read_offset_);
-  memcpy(this->vec.data(), this->buffer_ + this->read_offset_, first);
-  memcpy(this->vec.data() + first, this->buffer_, count - first);
-  this->read_offset_ = (this->read_offset_ + count) % BUFFER_BYTES;
-  this->buffered_bytes_ -= count;
-  this->queue_start_byte_ += count;
-  // Before the handoff these callbacks feed the wake-word detector. Record
-  // the capture position, not elapsed wall time (the main loop can stall).
-  if (!this->utterance_active_) {
-    this->last_detector_byte_ = this->queue_start_byte_;
-    this->detector_position_valid_ = true;
-  }
-  xSemaphoreGive(this->buffer_mutex_);
-  if (count != 0) {
     this->last_delivery_ms_ = now;
     // Callbacks may start/stop listeners; never hold the queue lock here.
     this->data_callbacks_.call(this->vec);

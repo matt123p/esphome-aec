@@ -20,10 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Moved the playback task to CPU 1 at priority 20 and lowered the CPU 0 AFE
+  wrapper to priority 4, below ESP-SR's internal priority-5 worker.
+- Added an explicit yield when AFE processing exceeds one frame period, reducing
+  the risk of system-task starvation and watchdog resets.
+- Added bounded microphone delivery catch-up after main-loop stalls so streamed
+  audio can recover its real-time upload rate.
+- Set the Waveshare voice-assistant filter length to the measured production
+  ceiling of 8 and the calibration example to 4 for additional CPU headroom.
 - Updated the Waveshare 7B audio-test and voice-assistant configurations to use
   `playback_gain_db: -12`, preventing the hardware reference from clipping when
   playback approaches full scale.
-- Updated the Waveshare 7B AEC filter length from 4 to 12 samples.
 - Disabled playback resampling in the Waveshare audio-test configuration so the
   calibration probe remains at exactly 16 kHz.
 - Expanded the configuration, architecture, setup, tuning, and example

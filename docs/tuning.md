@@ -131,7 +131,9 @@ Tune in this order:
 1. correct slot mapping and unclipped ADC/DAC levels;
 2. correct reference source and delay;
 3. `nlp_level`, starting with `normal` or `aggressive`;
-4. `filter_length`, starting at `12` on the Waveshare 7B;
+4. `filter_length`, using `8` for the Waveshare voice assistant and `4` while
+   running its calibration build; longer filters must be validated against
+   watchdog stability and sustained microphone-upload throughput;
 5. `fd_high_perf` only if the low-cost pipeline is stable and insufficient;
 6. optional noise suppression, speech enhancement, AGC, meters, and resampling.
 
@@ -139,3 +141,25 @@ Test at several playback volumes and distances. Include playback-only, speech-
 only, and simultaneous speech/playback cases, then test the real wake-word and
 voice-assistant hand-off. Objective telemetry is useful, but listening and
 recognition success during double-talk are the final quality tests.
+
+### Validate filter length against real-time throughput
+
+Increase `filter_length` only after routing, reference level/delay, and the
+lower-cost AFE settings work. For each candidate value:
+
+1. Cold boot several times and confirm there is no startup watchdog reset.
+2. Stream microphone audio for at least a minute while the display, network,
+   wake-word engine, and playback path are active.
+3. Confirm that five seconds of mono 16-bit/16 kHz audio produces 160,000 bytes
+   of microphone data. A materially lower sustained rate means the system is
+   falling behind even if speech still sounds plausible.
+4. Watch `max_processing_us`, RX/TX errors, dropped frames, and microphone queue
+   overflow logs with diagnostics enabled.
+5. Repeat playback-only and double-talk tests. Retain the longer filter only if
+   cancellation improves without harming voice delivery or stability.
+
+The Waveshare reference firmware uses `4` during calibration and `8` for the
+voice assistant. Treat those as workload-specific tested settings. If a longer
+filter is required, first reduce other CPU costs—for example spectrum metering,
+calibration analysis, display work, or speech enhancement—then repeat the full
+throughput test.

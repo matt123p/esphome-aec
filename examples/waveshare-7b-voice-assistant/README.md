@@ -21,7 +21,9 @@ during long spoken responses. See
 
 Playback is digitally attenuated by 12 dB before the DAC and AEC reference tap
 because the board's hardware reference can otherwise clip near full scale. The
-AEC filter length is set to 12 samples, matching the tested Waveshare baseline.
+AEC filter length is set to `8`, the tested production ceiling with
+speech enhancement enabled; longer values caused watchdog or upload-rate
+failures on the reference configuration.
 
 ## Use it
 

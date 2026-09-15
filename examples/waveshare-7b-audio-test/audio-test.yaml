@@ -124,7 +124,8 @@ aec_audio:
   afe_input_format: mmr
   agc: true
   nlp_level: normal
-  filter_length: 12
+  # Keep calibration CPU use below the real-time limit while correlation runs.
+  filter_length: 4
   # The hardware reference clips when playback approaches full scale even at
   # its minimum ADC gain, so retain 12 dB of digital headroom.
   playback_gain_db: -12

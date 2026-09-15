@@ -162,6 +162,20 @@ audio, accept a genuinely different sample rate, repair severe network
 starvation, or change the hardware clock. Input must still be signed 16-bit,
 nominally 16 kHz PCM. Mono and stereo are both supported.
 
-The playback task has priority 20 and the AFE/capture task priority 19; both
-are pinned to core 0. Per-frame buffers use internal RAM. Playback and
-reference queues use ESPHome ring buffers.
+### Task scheduling, CPU affinity, and priority
+
+The playback task runs at priority 20 on CPU 1. It spends most of its time
+blocked in the I2S write, so it can safely share that CPU with ESPHome's main
+loop. The AFE feed/fetch wrapper runs on CPU 0 at priority 4, below ESP-SR's
+internal AFE worker at priority 5. This ordering prevents the wrapper from
+repeatedly preempting the worker whose output it is waiting for. If processing
+exceeds one audio-frame period, the wrapper explicitly yields to avoid starving
+system tasks and triggering the watchdog. Per-frame buffers use internal RAM;
+playback and reference queues use ESPHome ring buffers.
+
+These priorities are intentionally asymmetric. Priority 20 protects continuous
+I2S transmission from ordinary application work, while priority 4 does not mean
+that AFE processing is unimportant: the actual processing runs in ESP-SR's
+priority-5 worker. The component task is chiefly a producer/consumer wrapper
+around that worker. Raising the wrapper priority can reduce throughput rather
+than improve it.

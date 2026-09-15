@@ -160,6 +160,12 @@ that suppresses the user's voice during double-talk, even if its playback-only
 result sounds quieter. See [Testing & Tuning]({{ '/tuning/' | relative_url }})
 for the repeatable test procedure.
 
+Filter length is also a CPU-budget decision. Keep `4` during bring-up and
+calibration. The complete Waveshare voice assistant uses `8`; measurements on
+that workload found that `10` could not sustain the required microphone upload
+rate and `12` could cause watchdog resets. A firmware image booting successfully
+does not prove that it can process and deliver audio continuously.
+
 ## Troubleshooting the bring-up
 
 - **AFE fails or the board resets:** confirm PSRAM, return to MMR/FD low-cost,

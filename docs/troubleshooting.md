@@ -44,7 +44,9 @@ section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
 - Four-slot Philips TDM, 16-bit PCM, and 16 kHz are fixed.
 - Exactly two microphone inputs and one mono AFE output.
 - A single component owns one paired I2S RX/TX peripheral.
-- Manual reference delay/gain/acoustic tuning; no automatic calibration.
+- Playback-reference delay remains manually tuned. Optional diagnostic firmware
+  can auto-tune the short analogue-reference delay, but the result is RAM-only
+  and must be validated and copied into the production configuration.
 - No runtime selection of task core/priority or ESP-SR version.
 - Capture controls and VAD state are C++ APIs rather than polished YAML actions
   or entities.

@@ -31,7 +31,7 @@ The 1024×600 touch UI can:
 
 The example uses `playback_gain_db: -12` because the board's hardware reference
 can clip near full-scale DAC playback even at its minimum ADC gain. It also uses
-an AEC filter length of 12 samples.
+an AEC filter length of `4` to retain CPU headroom during calibration.
 
 To tune analogue-reference delay, press **Auto-tune AEC (keep silent)** in Home
 Assistant and remain silent while the probe plays. Watch the calibration status

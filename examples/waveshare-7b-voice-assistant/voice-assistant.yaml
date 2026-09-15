@@ -141,7 +141,10 @@ aec_audio:
   noise_suppression: true
   speech_enhancement: true
   nlp_level: normal
-  filter_length: 12
+  # Longer filters exceeded the measured CPU budget: 12 triggered watchdog
+  # resets and 10 lost microphone upload throughput. Eight is the tested
+  # production ceiling with speech enhancement enabled.
+  filter_length: 8
   # Prevent clipping in the hardware reference path at high playback levels.
   playback_gain_db: -12
   resampler: true

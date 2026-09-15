@@ -29,7 +29,7 @@ setting at a time.
 | `afe_input_format` | no | `mmnr` | `mmr` feeds mic/mic/reference; `mmnr` inserts a zero unused channel before the reference. Use the shape supported by the selected ESP-SR target/build. |
 | `aec_mode` | no | `fd_low_cost` | `fd_low_cost` or `fd_high_perf`. Start with low cost; high performance uses more PSRAM. |
 | `nlp_level` | no | `aggressive` | `normal`, `aggressive`, or `very_aggressive`. More suppression can damage near-end speech. |
-| `filter_length` | no | `4` | AEC filter length from `1` to `16`. Longer filters cover longer echo tails but use more resources. |
+| `filter_length` | no | `4` | ESP-SR AEC filter-length setting from `1` to `16`. Higher values may model longer echo paths but increase processing cost substantially. |
 | `playback_gain_db` | no | `0` | Digital attenuation from `-60` to `0` dB, applied before I2S TX and the reference tap. Use it to prevent DAC/amplifier/reference-loopback clipping. |
 | `calibration` | no | `false` | Compile the optional analogue-reference delay auto-tuner and expose its C++ API. Intended for diagnostic firmware; it allocates about 64 KB of PSRAM when started. |
 | `agc` | no | `true` | Enable AFE automatic gain control. |
@@ -49,6 +49,47 @@ use. Its published ESP32-P4 single-channel figures for the standalone FD AEC
 are about 19 KB internal RAM plus 102 KB PSRAM in low-cost mode, and 8 KB plus
 138 KB in high-performance mode; the complete dual-microphone AFE and this
 component's buffers require more.
+
+### Choosing a filter length
+
+`filter_length` is an ESP-SR tuning parameter, not a duration in PCM samples.
+A higher value gives the canceller more capacity to model a longer or more
+complex echo path, but it also increases the amount of work required for every
+real-time audio frame. The maximum accepted value is therefore not necessarily
+a usable value for a complete ESPHome device.
+
+Use these values as practical starting points:
+
+| Configuration | Recommended value | Reason |
+| --- | ---: | --- |
+| New-board bring-up | `4` | Leaves CPU headroom while slots, levels, and routing are still being diagnosed. |
+| Waveshare 7B calibration firmware | `4` | Leaves headroom for correlation analysis, meters, logging, and the display UI. |
+| Waveshare 7B voice assistant | `8` | Highest production setting measured to sustain the complete voice pipeline with speech enhancement enabled. |
+
+On the tested Waveshare voice-assistant configuration, `12` could trigger a
+watchdog reset during startup and `10` delivered only about 76% of the required
+microphone data rate. Those figures describe that complete firmware workload,
+not a universal ESP32-P4 limit. Disabling expensive AFE stages or UI diagnostics
+may make a longer filter viable, but the result must be checked for watchdog
+stability, I2S errors, dropped frames, and sustained microphone upload—not just
+for successful compilation or AFE initialization.
+
+### Fixed task affinity and priority
+
+Task placement is currently fixed in the component rather than configurable in
+YAML:
+
+| Work | CPU | FreeRTOS priority | Scheduling rationale |
+| --- | ---: | ---: | --- |
+| Playback/I2S TX | 1 | 20 | Latency-sensitive, but normally blocked waiting for I2S DMA; shares CPU 1 with ESPHome's main loop. |
+| AFE feed/fetch wrapper | 0 | 4 | Kept away from the main loop and below ESP-SR's internal AFE worker. |
+| ESP-SR AFE worker | 0 | 5 | Must be able to run after the wrapper feeds it and before the wrapper fetches its result. |
+
+FreeRTOS schedules larger priority numbers first. Giving the wrapper priority
+5 or higher can be counterproductive: it may preempt the ESP-SR worker whose
+result it is waiting for, especially with a long filter. When one frame takes
+longer than its real-time budget, the wrapper briefly yields instead of
+monopolising CPU 0 until the watchdog fires.
 
 ### Automatic playback rate matching
 
