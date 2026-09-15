@@ -23,7 +23,7 @@ external_components:
       url: https://github.com/matt123p/esphome-aec
       ref: main
       path: src/esphome
-    components: [aec_audio]
+    components: [aec_speexdsp]
   # Required until ES7210 four-channel TDM support is merged into ESPHome.
   - source:
       type: git
@@ -46,6 +46,15 @@ esp32:
     sdkconfig_options:
       CONFIG_ESP_MAIN_TASK_STACK_SIZE: "16384"
       CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: "y"
+      # Compile for speed, not size: the default (-Os) makes the
+      # floating-point DSP loops several times slower. Both options are
+      # needed - they form a Kconfig choice and the size default must be
+      # explicitly cleared.
+      CONFIG_COMPILER_OPTIMIZATION_SIZE: "n"
+      CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+      # Size the ESP-DSP twiddle tables for the largest frame this component
+      # allows (frame_size 1024 -> 2048-point window).
+      CONFIG_DSP_MAX_FFT_SIZE_2048: "y"
 
 psram:
   mode: hex
@@ -119,46 +128,197 @@ audio_dac:
     sample_rate: 16000
     use_mclk: true
 
-aec_audio:
+# =============================================================================
+# aec_speexdsp hub - SpeexDSP echo cancellation + noise suppression + AGC + VAD
+#
+# Fixed by the component: 16 kHz, 16-bit, four-slot Philips-format TDM, the
+# component is the I2S master and owns the paired RX/TX channels. The
+# `audio_adc` above only configures the codec.
+# =============================================================================
+aec_speexdsp:
   id: voice_audio
-  audio_adc: microphone_adc
+
+  # --- Transport -------------------------------------------------------------
+
+  # ID of the configured audio_adc object. It is only used to initialise the
+  # ES7210 (or another codec); the I2S peripheral itself is created here.
+  audio_adc: audio_adc_es7210
+
+  # I2S pins. All are required. MCLK/BCLK/LRCLK/DOUT are outputs, DIN is an
+  # input. RX and TX share the clocks so capture, reference and playback stay
+  # synchronised (a hard requirement for reference-based AEC).
   mclk_pin: GPIO13
   bclk_pin: GPIO12
   lrclk_pin: GPIO10
   din_pin: GPIO11
   dout_pin: GPIO9
+
+  # ESP-IDF I2S peripheral number. Options: 0 - 2 (available ports are
+  # chip-dependent; the P4/S3 also have an I2S1/I2S2).
   i2s_port: 0
+
+  # Number of TDM time slots on the shared data wire per frame. The schema
+  # currently accepts exactly 4. The ES7210 in TDM mode produces 4 slots.
   tdm_slots: 4
-  # ES7210 TDM order is CH1, CH3, CH2, CH4 on this board.
+
+  # Which RX slot(s) carry microphones. Options: one to four distinct
+  # slots, each 0 - 3, and not the analog reference slot.
+  #   - one slot: single-microphone processing (the SpeexDSP sweet spot)
+  #   - two or more slots: beamforming can align and combine them.
+  # Waveshare 7B wiring: microphone 1 = slot 0, microphone 2 = slot 2.
   microphone_slots: [0, 2]
+
+  # Where the echo canceller gets its reference (the sound the device itself
+  # is playing). Options:
+  #   analog_slot - read the loopback signal from an ADC slot (preferred; the
+  #                 7B routes the amp signal to slot 1). Needs reference_slot.
+  #   playback    - use a mono copy of the accepted speaker PCM from a ring
+  #                 buffer. No wiring needed, but cannot see DAC/amp/speaker
+  #                 delay, gain or distortion, so cancellation is weaker.
   reference_source: analog_slot
+
+  # RX slot carrying the analog reference (only used by
+  # reference_source: analog_slot). Must differ from both microphone slots.
+  # Options: 0 - 3. Waveshare 7B: slot 1.
   reference_slot: 1
-  reference_delay_samples: 0
+
+  # Extra delay applied to the reference, in samples (16 samples = 1 ms at
+  # 16 kHz). Options: 0 - 4000 for a playback reference, 0 - 256 for an
+  # analog slot reference. The analog reference arrives synchronously in the
+  # TDM frame; a small value here compensates the residual group delay of the
+  # amp/loopback path (7 samples was measured on this board). SpeexDSP also
+  # adapts over a range of delays itself, so this only needs to be roughly
+  # right - get it inside a few ms and the filter converges.
+  reference_delay_samples: 7
+
+  # Which two TX slots the DAC consumes. Options: any two distinct slots
+  # 0 - 3. Mono playback is duplicated to both; stereo maps L/R.
   tx_slots: [0, 1]
-  afe_input_format: mmr
-  aec_mode: fd_low_cost
-  agc: true
+
+  # Bypass switch for slot mapping/debugging: publish raw RX slot N (0 - 3)
+  # instead of the DSP output. Set from YAML or at runtime via
+  # `id(audio_test).set_diagnostic_raw_slot(n)` (n = -1 restores DSP output).
+  # Not set here on purpose - the UI buttons drive it.
+
+  # --- SpeexDSP processing ---------------------------------------------------
+
+  # Samples processed per iteration by the echo canceller and preprocessor.
+  # Options: 128 / 192 / 256 / 320 / 384 / 512 / ... (multiple of 64, max
+  # 1024). 256 = 16 ms: a good balance. Larger frames amortise FFT overhead
+  # but increase latency; the whole frame must be processed within its real
+  # time budget (frame_size / 16000 seconds).
+  frame_size: 256
+
+  # Length of the adaptive echo filter, in samples of tail time. Options:
+  # 256 - 16384, at least frame_size. This is the dominant CPU/memory knob:
+  #   512  (~32 ms)  very close, well-damped speaker setups; cheapest
+  #   1024 (~64 ms)  small rooms, direct speaker-to-mic paths
+  #   2048 (~128 ms) default; typical indoor echo tail
+  #   4096 (~256 ms) large/reflective rooms or long playback-path latency
+  # The tail must cover (speaker+room decay + reference offset) or residual
+  # echo remains after the canceller converges. Unlike ESP-SR's filter_length
+  # (small integer units), this is plain samples.
+  filter_length: 1024
+
+  # Which processed microphone channel is published. Options:
+  #   first  - microphone_slots[0] (default; only one canceller is run)
+  #   second - microphone_slots[1]
+  #   mixed  - both processed independently and averaged (requires two
+  #            microphone slots; runs two cancellers: ~2x CPU/memory)
+  # SpeexDSP has no beamforming, so there is no dual-mic enhancement stage;
+  # this is a selection between channels, not a combination of them.
+  output_channel: first
+
+  # Post-AEC adaptive delay-and-sum beamforming. Each microphone retains its
+  # own stable echo path; localization runs on echo-cancelled signals and one
+  # shared preprocessor runs after the aligned sum.
+  beamforming:
+    enabled: true
+    # The microphones are 135 mm apart: ceil(135*16000/343000)=7 samples.
+    # This covers the approximately 6.30-sample end-fire TDOA at 20 C.
+    max_lag: 7
+    # 8 * 256 samples / 16 kHz = 128 ms localization cadence.
+    update_frames: 8
+    min_rms: 120
+    min_correlation_percent: 50
+    min_peak_dominance_percent: 5
+
+  # Speex preprocessor noise suppression (stationary noise: hiss, fan, hum).
+  # Options: true / false.
   noise_suppression: true
-  speech_enhancement: true
-  nlp_level: normal
-  # Longer filters exceeded the measured CPU budget: 12 triggered watchdog
-  # resets and 10 lost microphone upload throughput. Eight is the tested
-  # production ceiling with speech enhancement enabled.
-  filter_length: 8
-  # Prevent clipping in the hardware reference path at high playback levels.
+
+  # Maximum noise attenuation in dB once the preprocessor decides a frame is
+  # noise. Options: 5 - 60. Higher suppresses more noise but starts eating
+  # quiet speech; 15 is Speex's default and a good start. The residual echo
+  # suppressor below shares this gain machinery, so very large values can
+  # also thin out speech during playback.
+  noise_suppression_level_db: 10
+
+  # Speex automatic gain control on the cleaned output: raises quiet speech
+  # and tames loud speech toward agc_target_level. Options: true / false.
+  agc: true
+
+  # AGC target level as a fraction of digital full scale. Options: 0.01 - 1.0.
+  # 0.25 ≈ -12 dBFS (Speex's own default of 8000/32768 ≈ 0.244). Values near
+  # 1.0 will slam into clipping on loud syllables; recognition engines are
+  # happiest well below full scale.
+  agc_target_level: 0.25
+
+  # Speex voice activity detection, evaluated on the published channel.
+  # State is exposed via id(audio_test).get_vad_state() and
+  # .get_vad_probability(). Options: true / false.
+  vad: true
+
+  # Speech-start probability threshold in percent. Options: 20 - 90. Higher
+  # needs clearer speech to raise the flag (fewer false triggers in noise).
+  # Speex's speech-continue threshold is fixed at 20 %, so values below 20
+  # would never clear - hence the floor. Default 35 ≈ Speex's 0.35.
+  vad_threshold: 35
+
+  # Residual-echo suppression (works because the preprocessor is linked to
+  # the echo canceller). During far-end-only audio (no near speech) residual
+  # echo is clamped to echo_suppress_db below its level. Options: 5 - 60 dB.
+  # Higher = calmer far-end tail, but risks "pumping" if the VAD misses
+  # near-end speech. Default 40.
+  echo_suppress_db: 40
+
+  # Residual-echo suppression during double-talk (speech + playback). Options:
+  # 5 - 60 dB. Keep this WELL below echo_suppress_db: it is the value that
+  # decides whether the user's voice survives while a response is playing.
+  # Default 15.
+  echo_suppress_active_db: 10
+
+  # Digital attenuation applied to media playback before the I2S TX and the
+  # reference tap (they must stay identical). Keeps the amp/reference loopback
+  # out of clipping: this board's loopback rails near digital full scale at
+  # 0 dB ADC gain, so -12 dB leaves clean headroom. Options: -60 - 0.
   playback_gain_db: -12
+
+  # Playback drift compensator: continuously retunes the playback rate against
+  # the measured I2S clock so long streams never overrun/underrun the ring
+  # buffer. Options: true / false. Leave false while measuring reference delay
+  # (a fixed-speed probe is required for clean cross-correlation).
   resampler: true
-  wakenet: false
+
+  # Compile-time diagnostics (all default false):
+  #   telemetry:   periodic AEC_EFFECT lines (raw/cleaned RMS, attenuation dB,
+  #                reference correlation) during playback - the main tool for
+  #                judging cancellation quality on this engine
+  #   slot_logs:   five-second raw slot / output level summaries
+  #   diagnostics: five-second error, buffer, timing and VAD statistics
+  telemetry: true
+  profiling: true
+
 
 microphone:
-  - platform: aec_audio
+  - platform: aec_speexdsp
     id: voice_microphone
-    aec_audio_id: voice_audio
+    aec_speexdsp_id: voice_audio
 
 speaker:
-  - platform: aec_audio
+  - platform: aec_speexdsp
     id: voice_speaker
-    aec_audio_id: voice_audio
+    aec_speexdsp_id: voice_audio
 
 micro_wake_word:
   id: wake_word_engine
@@ -183,7 +343,7 @@ voice_assistant:
   speaker: voice_speaker
   micro_wake_word: wake_word_engine
   use_wake_word: false
-  # Audio is already processed by ESP-SR on the device.
+  # Audio is already cleaned by the on-device DSP.
   noise_suppression_level: 0
   volume_multiplier: 1.0
 

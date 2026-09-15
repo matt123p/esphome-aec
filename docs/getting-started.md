@@ -4,12 +4,20 @@ title: Installation & Setup
 
 # Installation & Setup
 
+This repository contains one component, `aec_speexdsp`: an open-source
+SpeexDSP-based echo canceller whose adaptive filter runs with significantly
+longer tails (up to ~1 s of echo path), providing significantly better echo
+suppression, and which builds for every ESP32 variant with an FPU.
+
 > **Using the Waveshare 7B?** The fastest path is to use the complete
 > [audio-test and voice-assistant examples]({{ '/examples/' | relative_url }}).
 > Run the audio test first, then move to the voice assistant after the complete
 > capture, reference, and playback path is verified.
 
-You do not need to manually download this repository. Instead simply reference this repository from `external_components`:
+You do not need to manually download this repository. Reference it from
+`external_components`:
+
+## Installation
 
 ```yaml
 external_components:
@@ -18,7 +26,7 @@ external_components:
       url: https://github.com/matt123p/esphome-aec
       ref: main
       path: src/esphome
-    components: [aec_audio]
+    components: [aec_speexdsp]
 ```
 
 If you use the ES7210, its current ESPHome component does not expose TDM mode.
@@ -37,37 +45,29 @@ external_components:
 
 Then:
 
-1. Configure ESPHome for an ESP32-S3 or ESP32-P4 using `framework: type:
-   esp-idf` and enable PSRAM.
-2. Configure the ADC and DAC/codecs for 16-bit, 16 kHz TDM. Codec-specific
-   components are not included with `aec_audio`.
-3. Determine the board's MCLK, BCLK, LRCLK, DIN, and DOUT pins.
-4. Determine which four RX slots contain microphone and analog-reference data,
+1. Configure ESPHome for an ESP32 variant with a hardware FPU (`ESP32`,
+   `ESP32-S2`, `ESP32-S3`, or `ESP32-P4`) using `framework: type: esp-idf`,
+   and enable PSRAM.
+2. Compile the DSP with performance optimization — add both keys to the
+   `esp32:` framework `sdkconfig_options` (they form a Kconfig choice, so the
+   size default must be explicitly cleared):
+   ```yaml
+   sdkconfig_options:
+     CONFIG_COMPILER_OPTIMIZATION_SIZE: "n"
+     CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+   ```
+3. Configure the ADC and DAC/codecs for 16-bit, 16 kHz TDM. Codec-specific
+   components are not included with `aec_speexdsp`.
+4. Determine the board's MCLK, BCLK, LRCLK, DIN, and DOUT pins.
+5. Determine which four RX slots contain microphone and analog-reference data,
    and which TX slots the DAC consumes.
-5. Add the hub and its microphone and speaker children.
-6. Start in low-cost mode with conservative processing settings.
-7. Flash over USB, inspect the startup log, then map and tune the reference.
+6. Add the hub and its microphone and speaker children.
+7. Start with the known-good settings below, then map and tune the reference.
 
-> **Warning**
-> **Begin with the known-good configuration below and change one
-> setting at a time.** Although the schema exposes the ESP-SR AFE controls that
-> are useful for development and tuning, not every combination of AFE type,
-> input format, processing stage, mode, and target chip works. This is a
-> limitation of the Espressif ESP-SR AFE library and its target-specific binary
-> pipelines, not just YAML validation. A configuration can be syntactically
-> valid yet be rejected by ESP-SR during startup or produce an unsupported feed
-> or fetch shape.
+### Known-good `aec_speexdsp` starting configuration
 
-For a staged hardware bring-up of a brand-new board, see
-[First-Time Board Setup and AEC Bring-Up]({{ '/first-time-setup/' | relative_url }}).
-
-The configuration below documents the core audio integration. For a complete
-Waveshare 7B firmware—including display, touch, Wi-Fi companion, diagnostics,
-and voice-assistant integration—use the [examples]({{ '/examples/' | relative_url }}).
-
-## Known-good starting configuration
-
-Known-good audio starting configuration for the Waveshare 7B:
+Known-good audio starting configuration for the Waveshare 7B using the analog
+hardware reference:
 
 ```yaml
 esp32:
@@ -79,7 +79,18 @@ esp32:
   framework:
     type: esp-idf
     advanced:
+      loop_task_stack_size: 16384
       enable_idf_experimental_features: true
+    sdkconfig_options:
+      # Compile for speed, not size: the default (-Os) makes the
+      # floating-point DSP loops several times slower. Both options are
+      # needed - they form a Kconfig choice and the size default must be
+      # explicitly cleared.
+      CONFIG_COMPILER_OPTIMIZATION_SIZE: "n"
+      CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+      # Size the ESP-DSP twiddle tables for the largest frame this component
+      # allows (frame_size 1024 -> 2048-point window).
+      CONFIG_DSP_MAX_FFT_SIZE_2048: "y"
 
 psram:
   mode: hex
@@ -96,7 +107,7 @@ external_components:
       url: https://github.com/matt123p/esphome-aec
       ref: main
       path: src/esphome
-    components: [aec_audio]
+    components: [aec_speexdsp]
   - source:
       type: git
       url: https://github.com/matt123p/esphome
@@ -129,7 +140,7 @@ audio_dac:
     sample_rate: 16000
     use_mclk: true
 
-aec_audio:
+aec_speexdsp:
   id: voice_audio
   audio_adc: mic_adc
   mclk_pin: GPIO13
@@ -142,42 +153,48 @@ aec_audio:
   microphone_slots: [0, 2]
   reference_source: analog_slot
   reference_slot: 1
-  reference_delay_samples: 0
+  reference_delay_samples: 7
   tx_slots: [0, 1]
-  afe_input_format: mmr
-  aec_mode: fd_low_cost
-  nlp_level: normal
-  filter_length: 8
-  # Prevent the hardware reference from clipping near full-scale playback.
-  playback_gain_db: -12
-  agc: true
+  frame_size: 256
+  filter_length: 2048
   noise_suppression: true
-  speech_enhancement: true
+  noise_suppression_level_db: 10
+  echo_suppress_db: 25
+  agc: true
+  vad: true
+  playback_gain_db: -12
   resampler: true
-  wakenet: false
 
 microphone:
-  - platform: aec_audio
+  - platform: aec_speexdsp
     id: cleaned_microphone
-    aec_audio_id: voice_audio
+    aec_speexdsp_id: voice_audio
 
 speaker:
-  - platform: aec_audio
+  - platform: aec_speexdsp
     id: full_duplex_speaker
-    aec_audio_id: voice_audio
+    aec_speexdsp_id: voice_audio
 ```
 
-Do not also configure another component to own the same I2S peripheral or pins.
-The `audio_adc` and `audio_dac` objects initialize their codecs. `aec_audio`
-references the ADC so setup ordering is correct, then creates and owns the
-paired ESP-IDF TDM RX/TX channels; the speaker child does not take an
-`audio_dac` option.
+On an ESP32-S3 the same configuration works with S3 pins and
+`board: esp32-s3-devkitc-1` / `variant: ESP32S3`. On a board without an analog
+loopback slot, use `reference_source: playback` and tune
+`reference_delay_samples` (0–4000) instead; expect weaker cancellation than a
+hardware reference.
 
-Keep the AFE-related values in this example together for the first successful
-bring-up. In particular, start with `afe_input_format: mmr`,
-`aec_mode: fd_low_cost`, `filter_length: 8`, `playback_gain_db: -12`, and
-`wakenet: false`. After the
-baseline works, alter only one option per test and check the startup log. The
-fact that an option appears in the [configuration reference]({{ '/configuration/' | relative_url }}) means the component
-can request it; it does not guarantee that ESP-SR implements every combination
-on every supported chip.
+`filter_length` is a plain sample count of echo tail (16 samples = 1 ms at
+16 kHz). It can run long: 2048 samples
+(~128 ms) is the default and a typical indoor tail, 4096 (~256 ms) suits large
+or reflective rooms, and up to 16384 (~1 s) is accepted. Longer filters cancel
+more echo but cost CPU and memory — see
+[Configuration Reference]({{ '/configuration/' | relative_url }}#choosing-an-echo-filter-length)
+and the [performance notes]({{ '/configuration/' | relative_url }}#performance-checklist).
+
+Do not configure another component to own the same I2S peripheral or pins. The
+`audio_adc` object only initializes the codec; the hub creates and owns the
+paired ESP-IDF TDM RX/TX channels. The speaker child does not take an
+`audio_dac` option; configure the board's top-level `audio_dac:` separately.
+
+For a staged hardware bring-up of a brand-new board, see
+[First-Time Board Setup and AEC Bring-Up]({{ '/first-time-setup/' | relative_url }}).
+

@@ -4,24 +4,36 @@ title: Testing & Tuning
 
 # Testing & Tuning
 
-A staged process for verifying a working installation and tuning the AFE
-pipeline. Start from the [known-good configuration]({{ '/getting-started/' | relative_url }}) and change one setting at a
-time.
+A staged process for verifying a working installation and tuning the echo
+cancellation pipeline. Start from the
+[known-good configuration]({{ '/getting-started/' | relative_url }}) and change
+one setting at a time.
 
 ## 1. Verify startup
 
-Compile and flash over USB for the first bring-up, then inspect logs. A healthy
-startup reports paired TDM initialization, the final enabled AFE stages, an AFE
-feed shape matching `MMR` or `MMNR`, one fetch channel, and creation of both
-audio tasks. Treat allocation failures, `ESP-SR rejected the AFE configuration`,
-or `Unsupported ESP-SR AFE shape` as setup failures rather than tuning issues.
+Compile and flash over USB for the first bring-up, then inspect logs.
+
+With `aec_speexdsp`, a healthy startup reports paired TDM initialization,
+creation of both audio tasks, and the canceller memory placement:
+
+```text
+SpeexDSP state memory: 118 KB internal, 0 KB PSRAM
+```
+
+If the state lands in PSRAM, reduce `filter_length` until it fits in internal
+RAM — PSRAM-resident state measurably slows the frame loop. Once running, the
+audio task logs its load every five seconds:
+
+```text
+DSP load: 313 frames in 5002 ms: processing avg 2210 us/frame (13.8% of real time), peak 4980 us (31.1%), frame budget 16000 us
+```
 
 ## 2. Map TDM slots
 
 Temporarily enable:
 
 ```yaml
-aec_audio:
+aec_speexdsp:
   # ...
   diagnostic_raw_slot: 0
   slot_logs: true
@@ -30,12 +42,12 @@ aec_audio:
 Speak close to each microphone and play a tone. Repeat slots `0` through `3`.
 Use the logs/listening tests to identify both microphone slots and, if present,
 the analog reference. Update `microphone_slots` and `reference_slot`, then
-remove `diagnostic_raw_slot` so the published stream comes from the AFE.
+remove `diagnostic_raw_slot` so the published stream comes from the DSP.
 
 ## 3. Verify full-duplex routing
 
-Play a known 16-bit/16 kHz WAV through the `aec_audio` speaker while listening
-to or recording the `aec_audio` microphone. Check that:
+Play a known 16-bit/16 kHz WAV through the component's speaker while listening
+to or recording the component's microphone. Check that:
 
 - playback is clean and reaches the intended DAC channels;
 - microphone capture continues throughout playback;
@@ -75,7 +87,7 @@ source and transport rather than treating the limit as normal clock drift.
 
 ## 4. Prevent reference clipping
 
-Clipping must be fixed before delay or AFE tuning. A reference channel that
+Clipping must be fixed before delay or DSP tuning. A reference channel that
 reaches digital full scale has lost information, even if its ADC gain is already
 at minimum. Use `playback_gain_db` to attenuate media before it reaches both the
 DAC and reference tap. The Waveshare 7B examples use `-12` dB because its
@@ -100,23 +112,13 @@ WAV. Use the correlation peak as the initial delay, then sweep nearby values
 while measuring and listening.
 
 For an analogue reference, delay may be adjusted from 0 to 256 samples (16 ms).
-The Waveshare audio-test example can determine a useful value automatically:
-
-1. Flash the audio-test example and leave the board in its normal enclosure and
-   position.
-2. In Home Assistant press **Auto-tune AEC (keep silent)** and remain silent for
-   roughly 30–60 seconds while its bounded broadband probe plays.
-3. Watch **AEC calibration status** and **AEC calibrated reference delay**. The
-   test rejects clipped/quiet inputs, weak correlation, processing failures,
-   boundary results, and timeouts.
-4. Confirm a retained result with playback-only and double-talk tests, then copy
-   the reported sample value into `reference_delay_samples` in production YAML.
-
-The result is RAM-only and calibration never starts automatically. The routine
-tests zero plus candidate delays derived from both microphones, then retains a
-delay only when a repeat trial reduces correlated leakage without materially
-increasing total residual output. Press **Cancel AEC auto-tune** to stop the
-probe and restore the pre-test delay.
+The analog reference arrives in the same TDM frame as the microphones, so the
+delay only compensates the residual amplifier/loopback group delay — on the
+reference Waveshare 7B this measured 7 samples. To measure it on another board,
+play a repeatable signal, record a raw microphone slot (the capture API or the
+audio-test example both work), and cross-correlate the recording with the
+source signal. SpeexDSP also adapts over a range of delays itself, so the
+configured value only needs to be roughly right.
 
 ## 6. Measure cancellation and double-talk
 
@@ -129,23 +131,33 @@ speech is not acceptable full-duplex performance.
 Tune in this order:
 
 1. correct slot mapping and unclipped ADC/DAC levels;
-2. correct reference source and delay;
-3. `nlp_level`, starting with `normal` or `aggressive`;
-4. `filter_length`, using `8` for the Waveshare voice assistant and `4` while
-   running its calibration build; longer filters must be validated against
-   watchdog stability and sustained microphone-upload throughput;
-5. `fd_high_perf` only if the low-cost pipeline is stable and insufficient;
-6. optional noise suppression, speech enhancement, AGC, meters, and resampling.
+2. correct reference source, `playback_gain_db`, and
+   `reference_delay_samples` (the capture/play-back API is useful for
+   measuring the delay by cross-correlation);
+3. `noise_suppression_level_db`;
+4. `echo_suppress_db` / `echo_suppress_active_db` — higher values remove more
+   residual echo; lower `echo_suppress_active_db` preserves double-talk;
+5. `filter_length` — the main quality knob. Longer tails cancel longer rooms:
+   start at the `2048` default, try `4096` (~256 ms) in reflective rooms, and
+   go up to `16384` if the DSP budget allows. SpeexDSP's own adaptive delay
+   search means the reference delay only needs to be roughly right;
+6. `agc_target_level`, then optional meters and resampling.
 
 Test at several playback volumes and distances. Include playback-only, speech-
 only, and simultaneous speech/playback cases, then test the real wake-word and
 voice-assistant hand-off. Objective telemetry is useful, but listening and
 recognition success during double-talk are the final quality tests.
 
+With beamforming enabled, inspect the periodic `Beamformer profile`
+TDOA/confidence log and set `max_lag` from the physical microphone spacing
+(about one sample per 21 mm at 16 kHz) before relaxing the confidence
+thresholds. Without beamforming, try `output_channel: second` (or `mixed`) if
+the first microphone is weaker.
+
 ### Validate filter length against real-time throughput
 
 Increase `filter_length` only after routing, reference level/delay, and the
-lower-cost AFE settings work. For each candidate value:
+lower-cost settings work. For each candidate value:
 
 1. Cold boot several times and confirm there is no startup watchdog reset.
 2. Stream microphone audio for at least a minute while the display, network,
@@ -154,12 +166,14 @@ lower-cost AFE settings work. For each candidate value:
    of microphone data. A materially lower sustained rate means the system is
    falling behind even if speech still sounds plausible.
 4. Watch `max_processing_us`, RX/TX errors, dropped frames, and microphone queue
-   overflow logs with diagnostics enabled.
+   overflow logs with diagnostics enabled. On `aec_speexdsp`, watch the
+   five-second `DSP load` line: the average percentage is the share of one
+   core needed to keep up, and values near 100% mean frames will be dropped.
+   Also confirm the startup memory log still reports the canceller state in
+   internal RAM.
 5. Repeat playback-only and double-talk tests. Retain the longer filter only if
    cancellation improves without harming voice delivery or stability.
 
-The Waveshare reference firmware uses `4` during calibration and `8` for the
-voice assistant. Treat those as workload-specific tested settings. If a longer
-filter is required, first reduce other CPU costs—for example spectrum metering,
-calibration analysis, display work, or speech enhancement—then repeat the full
-throughput test.
+If a longer filter is required, first reduce other CPU costs — for example
+spectrum metering, display work, or other optional processing — then repeat the
+full throughput test.

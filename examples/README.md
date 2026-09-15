@@ -12,7 +12,7 @@ Wi-Fi companion.
 ## Available examples
 
 - [Audio test](waveshare-7b-audio-test/) — map and inspect every raw TDM slot,
-  compare the ESP-SR output, view levels and spectrum, make a short recording,
+  compare the AEC output, view levels and spectrum, make a short recording,
   and play a known test clip.
 - [Voice assistant](waveshare-7b-voice-assistant/) — a complete local-wake-word
   Home Assistant voice satellite with full-duplex AEC, rolling pre-buffer

@@ -6,8 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Removed
+
+- Removed the `aec_audio` (ESP-SR-based) component. `aec_speexdsp` is now the
+  only component in this repository. Configurations must switch to the
+  `aec_speexdsp` hub and child platforms; ESP-SR-only options (`afe_input_format`,
+  `aec_mode`, `nlp_level`, `speech_enhancement`, `wakenet`, and the unit-style
+  `filter_length`) have no equivalent and must be removed.
+
+### Changed
+
+- Converted the Waveshare 7B audio-test and voice-assistant examples to
+  `aec_speexdsp`. The audio-test example no longer includes automatic
+  reference-delay calibration (not available on this engine); the tested
+  `reference_delay_samples: 7` is set directly, and the DSP-output selection
+  replaces the AFE-output selection in the touch UI.
+- Revisited all documentation for the single-component repository.
+
 ### Added
 
+- Added the `aec_speexdsp` component: an open-source SpeexDSP-based sibling of
+  `aec_audio` providing AEC, noise suppression, AGC, and VAD, with optional
+  post-AEC delay-and-sum beamforming, per-slot meters, and the same
+  capture/playback and rate-matching tooling. It is now the recommended
+  component: its adaptive echo filter runs with significantly longer tails
+  (`256`–`16384` samples, up to about one second of echo path, versus ESP-SR's
+  short unit-based filter), providing significantly better echo suppression,
+  and it builds for every ESP32 variant with an FPU instead of requiring the
+  ESP32-S3/P4-only ESP-SR binaries. SpeexDSP is vendored inside the component
+  (BSD-licensed); the FFT is accelerated through `espressif/esp-dsp`.
 - Added `playback_gain_db`, supporting digital playback attenuation from
   `-60` to `0` dB before both I2S transmission and the playback-reference tap.
 - Added optional on-device analogue-reference delay calibration, enabled with

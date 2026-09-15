@@ -15,7 +15,7 @@
   <rect x="845" y="75" width="150" height="70" rx="12" class="node"/><text x="920" y="107" text-anchor="middle" class="l">Enclosure</text><text x="920" y="129" text-anchor="middle" class="s">and room</text>
   <path d="M195 110H245" class="line" marker-end="url(#playback-arrow)"/><path d="M395 110H445" class="line" marker-end="url(#playback-arrow)"/><path d="M595 110H645" class="line" marker-end="url(#playback-arrow)"/><path d="M795 110H845" class="line" marker-end="url(#playback-arrow)"/>
   <rect x="430" y="195" width="180" height="76" rx="12" class="node good"/><text x="520" y="224" text-anchor="middle" class="l">Analog tap + ADC</text><text x="520" y="249" text-anchor="middle" class="s">synchronized TDM slot</text>
-  <rect x="765" y="195" width="190" height="76" rx="12" class="node afe"/><text x="860" y="224" text-anchor="middle" class="l">ESP-SR AFE</text><text x="860" y="249" text-anchor="middle" class="s">reference input</text>
+  <rect x="765" y="195" width="190" height="76" rx="12" class="node afe"/><text x="860" y="224" text-anchor="middle" class="l">Echo canceller</text><text x="860" y="249" text-anchor="middle" class="s">reference input</text>
   <path d="M520 145V195" class="tap" marker-end="url(#hardware-arrow)"/><path d="M610 233H765" class="tap" marker-end="url(#hardware-arrow)"/>
   <text x="600" y="298" text-anchor="middle" class="s">The analog tap includes more of the real playback path.</text>
   <line x1="45" y1="320" x2="1155" y2="320" stroke="#e2e8f0" stroke-width="2"/>
@@ -26,6 +26,6 @@
   <rect x="645" y="405" width="150" height="70" rx="12" class="node"/><text x="720" y="447" text-anchor="middle" class="l">Speaker</text>
   <rect x="845" y="405" width="150" height="70" rx="12" class="node"/><text x="920" y="437" text-anchor="middle" class="l">Enclosure</text><text x="920" y="459" text-anchor="middle" class="s">and room</text>
   <path d="M195 440H245" class="line" marker-end="url(#playback-arrow)"/><path d="M395 440H445" class="line" marker-end="url(#playback-arrow)"/><path d="M595 440H645" class="line" marker-end="url(#playback-arrow)"/><path d="M795 440H845" class="line" marker-end="url(#playback-arrow)"/>
-  <rect x="45" y="505" width="190" height="58" rx="12" class="node afe"/><text x="140" y="540" text-anchor="middle" class="l">ESP-SR AFE</text>
+  <rect x="45" y="505" width="190" height="58" rx="12" class="node afe"/><text x="140" y="540" text-anchor="middle" class="l">Echo canceller</text>
   <path d="M120 475V505" class="copy" marker-end="url(#software-arrow)"/><text x="270" y="535" class="s">does not contain DAC, amplifier, speaker, enclosure, or acoustic effects</text>
 </svg>

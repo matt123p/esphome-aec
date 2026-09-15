@@ -4,11 +4,12 @@ title: First-Time Board Setup
 
 # First-Time Board Setup and AEC Bring-Up
 
-Porting `aec_audio` to a new board is primarily a hardware-validation exercise.
-Display, networking, codec control, raw capture, playback, and the AEC reference
-are separate systems; prove each one before evaluating echo cancellation.
+Porting the component to a new board is primarily a hardware-validation
+exercise. Display, networking, codec control, raw capture, playback, and the
+AEC reference are separate systems; prove each one before evaluating echo
+cancellation.
 
-![Seven-stage board bring-up sequence from basic boot through final AFE evaluation]({{ '/assets/diagrams/bring-up-stages.svg' | relative_url }})
+![Seven-stage board bring-up sequence from basic boot through final DSP evaluation]({{ '/assets/diagrams/bring-up-stages.svg' | relative_url }})
 
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-7B settings in the
 [installation guide]({{ '/getting-started/' | relative_url }}) are the tested
@@ -32,9 +33,11 @@ playback DAC/codec, and amplifier. Record:
 - ADC input routing and four-slot TDM order; and
 - the two TDM slots consumed by the DAC.
 
-The component requires ESP-IDF, PSRAM, an ESP32-S3 or ESP32-P4, two synchronized
-microphone channels, and four-slot, 16-bit, 16 kHz TDM. A hardware playback
-reference is strongly preferred. See [Hardware & Audio Design]({{ '/hardware/' | relative_url }})
+The components require ESP-IDF, four-slot, 16-bit, 16 kHz TDM, and
+synchronized microphone channels. `aec_speexdsp` runs on any ESP32
+(practically, one with an FPU) and prefers PSRAM for long echo filters. A
+hardware playback reference is strongly preferred. See
+[Hardware & Audio Design]({{ '/hardware/' | relative_url }})
 before selecting or wiring a board.
 
 ## 1. Prove the board without audio
@@ -42,7 +45,7 @@ before selecting or wiring a board.
 Start with a minimal ESPHome configuration. Confirm that the processor boots
 reliably, PSRAM is detected, logs are stable, and API/OTA networking works. If
 the device also has a display or touch panel, prove those separately before
-adding the codecs or `aec_audio`.
+adding the codecs or the audio hub.
 
 Save this minimal configuration as a recovery image. It gives you a known-good
 baseline if later audio work causes memory pressure or boot failures.
@@ -62,17 +65,15 @@ amplifier enable is wrong, so verify those signals against the schematic.
 ## 3. Add the audio hub in diagnostic mode
 
 Copy the hub, microphone, and speaker structure from the installation guide,
-then replace the board-specific pins. Begin with the conservative AFE baseline:
+then replace the board-specific pins. Begin with the conservative diagnostic
+baseline:
 
 ```yaml
-aec_audio:
+aec_speexdsp:
   # audio_adc and the five I2S/TDM pins go here
   tdm_slots: 4
-  afe_input_format: mmr
-  aec_mode: fd_low_cost
-  nlp_level: normal
-  filter_length: 4
-  wakenet: false
+  frame_size: 256
+  filter_length: 2048
   diagnostic_raw_slot: 0
   slot_logs: true
   diagnostics: true
@@ -85,7 +86,7 @@ errors before assessing audio quality.
 ## 4. Map every receive slot
 
 Set `diagnostic_raw_slot` to each value from `0` through `3`, rebuilding as
-needed. Listen to or record the published `aec_audio` microphone while you:
+needed. Listen to or record the published microphone while you:
 
 1. speak or rub a finger near each microphone in turn;
 2. play a repeatable test signal through the speaker; and
@@ -102,7 +103,7 @@ another board may differ.
 
 ## 5. Verify playback
 
-Send signed 16-bit, 16 kHz mono or stereo PCM through the `aec_audio` speaker.
+Send signed 16-bit, 16 kHz mono or stereo PCM through the component's speaker.
 Check that playback reaches the intended DAC channels cleanly and that capture
 continues during playback. If there is silence or distortion, verify DOUT,
 `tx_slots`, codec volume/mute, amplifier control, speaker wiring, and TDM framing.
@@ -118,12 +119,13 @@ It should be quiet when playback is stopped, closely follow playback when it is
 active, and respond little to room speech. A spare or microphone-connected ADC
 channel is not a playback reference. Set the verified slot as `reference_slot`
 and begin with `reference_delay_samples: 0`. Analog-reference delays up to 256
-samples (16 ms) can be tested with the audio example's auto-tune facility.
+samples (16 ms) can be tested; SpeexDSP also adapts over a range of delays
+itself, so the value only needs to be roughly right.
 
 If the board has no hardware feedback path, use:
 
 ```yaml
-aec_audio:
+aec_speexdsp:
   reference_source: playback
   reference_delay_samples: 0
 ```
@@ -139,9 +141,9 @@ correlation peak as an initial `reference_delay_samples` value. Then sweep nearb
 values while keeping the clip, volume, room, and microphone position fixed. The
 accepted range is 0–4000 samples (0–250 ms).
 
-## 7. Enable and evaluate the AFE
+## 7. Enable and evaluate the DSP
 
-Remove `diagnostic_raw_slot` to publish the enhanced AFE output. Test the same
+Remove `diagnostic_raw_slot` to publish the cleaned output. Test the same
 phrase in three conditions: speech only, playback only, and simultaneous speech
 and playback. A successful configuration substantially reduces playback while
 keeping near-end speech intelligible; complete silence is not a realistic goal.
@@ -150,26 +152,28 @@ Tune in this order:
 
 1. correct slot mapping, clean levels, and stable TDM transport;
 2. correct reference source, level, and software-reference delay;
-3. `nlp_level`;
-4. `filter_length`;
-5. `fd_high_perf`, if the low-cost mode is stable but insufficient; and
-6. optional noise suppression, speech enhancement, AGC, meters, and resampling.
+3. `noise_suppression_level_db`, then `echo_suppress_db` /
+   `echo_suppress_active_db`;
+4. `filter_length` — a plain sample count (see
+   [choosing an echo filter length]({{ '/configuration/' | relative_url }}#choosing-an-echo-filter-length));
+   and
+5. optional noise suppression, AGC, meters, and resampling.
 
 Change one setting per test. Test several playback volumes and reject a setting
 that suppresses the user's voice during double-talk, even if its playback-only
 result sounds quieter. See [Testing & Tuning]({{ '/tuning/' | relative_url }})
 for the repeatable test procedure.
 
-Filter length is also a CPU-budget decision. Keep `4` during bring-up and
-calibration. The complete Waveshare voice assistant uses `8`; measurements on
-that workload found that `10` could not sustain the required microphone upload
-rate and `12` could cause watchdog resets. A firmware image booting successfully
-does not prove that it can process and deliver audio continuously.
+Filter length is also a CPU-budget decision. Start at the `2048`-sample
+default and raise it only while the `DSP load` log stays comfortably below
+100%. A firmware image booting successfully does not prove that it can process
+and deliver audio continuously.
 
 ## Troubleshooting the bring-up
 
-- **AFE fails or the board resets:** confirm PSRAM, return to MMR/FD low-cost,
-  and disable optional meters and telemetry.
+- **DSP load near 100% or PSRAM state:** enable the performance
+  `sdkconfig_options`, then reduce `filter_length` until the load log and
+  memory placement are comfortable.
 - **All slots are silent:** verify codec power, MCLK/BCLK/LRCLK, DIN direction,
   and four-slot TDM mode.
 - **One microphone is missing:** scan all four slots, then check bias, routing,
@@ -185,7 +189,7 @@ does not prove that it can process and deliver audio continuously.
   AEC and AGC cannot recover it.
 
 Keep the final board revision, codec addresses, pins, verified RX/TX slots,
-gains, maximum clean playback volume, ESPHome version, and AFE settings with the
+gains, maximum clean playback volume, ESPHome version, and DSP settings with the
 working configuration. Those details make a port reproducible and upgrades
 testable.
 

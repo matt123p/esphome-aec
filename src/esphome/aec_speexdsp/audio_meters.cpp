@@ -1,17 +1,17 @@
-#include "aec_audio.h"
+#include "aec_speexdsp.h"
 #include "esphome/core/log.h"
 
-#if defined(USE_ESP32) && defined(USE_AEC_AUDIO_METERS)
+#if defined(USE_ESP32) && defined(USE_AEC_SPEEXDSP_METERS)
 
 #include <esp_heap_caps.h>
 
 namespace esphome {
-namespace aec_audio {
+namespace aec_speexdsp {
 
-static const char *const TAG = "audio_meters";
-static const uint32_t SAMPLE_RATE = 16000;
+static const char *const TAG = "speexdsp_meters";
+// SAMPLE_RATE comes from aec_speexdsp.h (namespace-scope constant).
 
-void AECAudioMetersComponent::setup() {
+void AECSpeexDspMetersComponent::setup() {
   // FFT buffers for spectrum analyser (PSRAM, non-fatal if unavailable)
   this->fft_re_ = static_cast<float *>(
       heap_caps_aligned_alloc(16, SPECTRUM_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -28,11 +28,11 @@ void AECAudioMetersComponent::setup() {
   }
 }
 
-void AECAudioMetersComponent::dump_config() {
+void AECSpeexDspMetersComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Audio Meters component initialized");
 }
 
-void AECAudioMetersComponent::process_raw(const int16_t *raw, size_t frames, uint8_t slots) {
+void AECSpeexDspMetersComponent::process_raw(const int16_t *raw, size_t frames, uint8_t slots) {
   for (uint8_t slot = 0; slot < slots; slot++) {
     uint64_t sum_sq = 0;
     int32_t peak = 0;
@@ -50,7 +50,7 @@ void AECAudioMetersComponent::process_raw(const int16_t *raw, size_t frames, uin
   }
 }
 
-void AECAudioMetersComponent::process_reference(const int16_t *ref, size_t frames) {
+void AECSpeexDspMetersComponent::process_reference(const int16_t *ref, size_t frames) {
   uint64_t reference_sum_sq = 0;
   int32_t reference_peak = 0;
   for (size_t frame = 0; frame < frames; frame++) {
@@ -63,23 +63,25 @@ void AECAudioMetersComponent::process_reference(const int16_t *ref, size_t frame
   this->reference_peak_.store(reference_peak);
 }
 
-void AECAudioMetersComponent::process_output(const int16_t *planar, size_t frames) {
+void AECSpeexDspMetersComponent::process_output(const int16_t *mono, size_t frames) {
+  // The SpeexDSP pipeline publishes a single mono channel (unlike the planar
+  // stereo layout of the ESP-SR wrapper).
   // 1. Level meters (VU)
   uint64_t sum_sq = 0;
   uint32_t peak = 0;
   size_t clipped = 0;
   size_t alternating = 0;
-  for (size_t sample = 0; sample < frames * 2; sample++) {
-    const int32_t value = planar[sample];
+  for (size_t sample = 0; sample < frames; sample++) {
+    const int32_t value = mono[sample];
     const uint32_t magnitude = value == INT16_MIN ? 32768U : static_cast<uint32_t>(std::abs(value));
     peak = std::max(peak, magnitude);
     if (magnitude >= 32760U)
       clipped++;
-    if (sample > 0 && ((value < 0) != (planar[sample - 1] < 0)))
+    if (sample > 0 && ((value < 0) != (mono[sample - 1] < 0)))
       alternating++;
     sum_sq += static_cast<uint64_t>(value * value);
   }
-  const float rms = std::sqrt(static_cast<float>(sum_sq) / (frames * 2));
+  const float rms = std::sqrt(static_cast<float>(sum_sq) / frames);
   this->output_meter_history_[this->output_meter_history_index_] = rms;
   this->output_meter_history_index_ = (this->output_meter_history_index_ + 1) % OUTPUT_METER_HISTORY_SIZE;
   this->output_meter_history_count_ = std::min(this->output_meter_history_count_ + 1, OUTPUT_METER_HISTORY_SIZE);
@@ -100,18 +102,18 @@ void AECAudioMetersComponent::process_output(const int16_t *planar, size_t frame
   for (size_t index = 0; index < this->output_peak_history_count_; index++)
     peak_3s = std::max(peak_3s, this->output_peak_history_[index]);
   this->output_peak_3s_.store(peak_3s);
-  this->output_clipped_percent_.store(100.0f * clipped / (frames * 2));
-  this->output_alternating_percent_.store(frames > 0 ? 100.0f * alternating / (frames * 2 - 1) : 0.0f);
+  this->output_clipped_percent_.store(frames > 0 ? 100.0f * clipped / frames : 0.0f);
+  this->output_alternating_percent_.store(frames > 1 ? 100.0f * alternating / (frames - 1) : 0.0f);
   this->output_min_dbfs_.store(to_dbfs(minimum));
   this->output_max_dbfs_.store(to_dbfs(maximum));
 
-  // 2. Spectrum analyser (using mono channel 0 from planar output). The FFT is
-  // deliberately gated by the UI so it adds no continuous audio-task load.
+  // 2. Spectrum analyser. The FFT is deliberately gated by the UI so it adds
+  // no continuous audio-task load.
   if (this->spectrum_enabled_.load())
-    this->compute_spectrum_(planar, frames);
+    this->compute_spectrum_(mono, frames);
 }
 
-void AECAudioMetersComponent::init_spectrum_() {
+void AECSpeexDspMetersComponent::init_spectrum_() {
   // Hann window coefficients
   for (int i = 0; i < SPECTRUM_FFT_SIZE; i++)
     hann_win_[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * i / (SPECTRUM_FFT_SIZE - 1)));
@@ -134,7 +136,7 @@ void AECAudioMetersComponent::init_spectrum_() {
     spectrum_db_[k] = -80.0f;
 }
 
-void AECAudioMetersComponent::compute_spectrum_(const int16_t *mono, size_t frames) {
+void AECSpeexDspMetersComponent::compute_spectrum_(const int16_t *mono, size_t frames) {
   if (fft_re_ == nullptr)
     return;
 
@@ -172,7 +174,7 @@ void AECAudioMetersComponent::compute_spectrum_(const int16_t *mono, size_t fram
   }
 }
 
-void AECAudioMetersComponent::fft_r2_(float *re, float *im, int n) {
+void AECSpeexDspMetersComponent::fft_r2_(float *re, float *im, int n) {
   // Bit-reversal permutation
   for (int i = 1, j = 0; i < n; i++) {
     int bit = n >> 1;
@@ -206,7 +208,7 @@ void AECAudioMetersComponent::fft_r2_(float *re, float *im, int n) {
   }
 }
 
-}  // namespace aec_audio
+}  // namespace aec_speexdsp
 }  // namespace esphome
 
 #endif

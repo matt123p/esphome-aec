@@ -8,10 +8,10 @@ The repository includes two complete examples for the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B).
 They contain the board's tested codec, pin, TDM-slot, display, touch, and
 ESP32-C6 Wi-Fi configuration, so they are the quickest route from a new board
-to a working `aec_audio` voice satellite.
+to a working voice satellite.
 
 > **Start with the audio test.** Confirm the microphones, hardware playback
-> reference, speaker, and AFE output before trying the voice assistant. A voice
+> reference, speaker, and AEC output before trying the voice assistant. A voice
 > pipeline cannot compensate for an incorrect slot map or distorted audio.
 
 ## Audio test
@@ -20,7 +20,7 @@ The
 [Waveshare 7B audio-test example](https://github.com/matt123p/esphome-aec/tree/main/examples/waveshare-7b-audio-test)
 is the recommended first firmware for this board. Its touch interface lets you:
 
-- listen to the enhanced AFE output or any of the four raw TDM slots;
+- listen to the enhanced DSP output or any of the four raw TDM slots;
 - inspect RMS, peak levels, and a 32-bin spectrum;
 - record and replay two seconds of captured audio; and
 - play a bundled, repeatable test signal through the speaker.

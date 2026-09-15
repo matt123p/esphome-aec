@@ -4,100 +4,168 @@ title: Configuration Reference
 
 # Configuration Reference
 
-All options accepted by the `aec_audio` component. Start from the
-[known-good configuration]({{ '/getting-started/' | relative_url }}) and change one
-setting at a time.
+Start from the [known-good configuration]({{ '/getting-started/' | relative_url }})
+and change one setting at a time.
 
-## `aec_audio` hub
+## `aec_speexdsp` hub
 
 | Option | Required | Default | Description |
 | --- | :---: | --- | --- |
 | `id` | yes | — | Hub ID referenced by the child platforms. |
-| `audio_adc` | yes | — | Configured ESPHome `audio_adc` ID. It must provide the expected 16 kHz, 16-bit TDM stream. |
-| `mclk_pin` | yes | — | I2S master-clock output. |
-| `bclk_pin` | yes | — | I2S bit-clock output. |
-| `lrclk_pin` | yes | — | I2S word-select/frame-clock output. |
-| `din_pin` | yes | — | TDM receive-data input from the ADC. |
-| `dout_pin` | yes | — | TDM transmit-data output to the DAC. |
-| `i2s_port` | no | `0` | ESP-IDF I2S port number, validated from `0` to `2`; available ports remain chip-dependent. |
-| `tdm_slots` | no | `4` | Number of TDM slots. The current schema accepts exactly `4`. |
-| `microphone_slots` | no | `[0, 1]` | Two distinct RX slots, each from `0` to `3`. |
-| `reference_source` | no | `analog_slot` | `analog_slot` uses captured ADC data; `playback` uses speaker PCM. |
-| `reference_slot` | no | `2` | RX slot used only by `analog_slot`. It must differ from both microphone slots. |
-| `reference_delay_samples` | no | `0` | Reference delay, `0`–`4000` samples for `playback` or `0`–`256` for `analog_slot`. At 16 kHz, 16 samples = 1 ms. |
-| `tx_slots` | no | `[0, 1]` | Two TDM TX slots, each from `0` to `3`. |
-| `afe_input_format` | no | `mmnr` | `mmr` feeds mic/mic/reference; `mmnr` inserts a zero unused channel before the reference. Use the shape supported by the selected ESP-SR target/build. |
-| `aec_mode` | no | `fd_low_cost` | `fd_low_cost` or `fd_high_perf`. Start with low cost; high performance uses more PSRAM. |
-| `nlp_level` | no | `aggressive` | `normal`, `aggressive`, or `very_aggressive`. More suppression can damage near-end speech. |
-| `filter_length` | no | `4` | ESP-SR AEC filter-length setting from `1` to `16`. Higher values may model longer echo paths but increase processing cost substantially. |
-| `playback_gain_db` | no | `0` | Digital attenuation from `-60` to `0` dB, applied before I2S TX and the reference tap. Use it to prevent DAC/amplifier/reference-loopback clipping. |
-| `calibration` | no | `false` | Compile the optional analogue-reference delay auto-tuner and expose its C++ API. Intended for diagnostic firmware; it allocates about 64 KB of PSRAM when started. |
-| `agc` | no | `true` | Enable AFE automatic gain control. |
-| `noise_suppression` | no | `true` | Enable AFE noise suppression. |
-| `speech_enhancement` | no | `true` | Enable the dual-microphone speech-enhancement stage. |
-| `resampler` | no | `false` | Compile automatic host-to-satellite playback rate matching around the nominal 16 kHz rate. |
-| `wakenet` | no | `false` | Experimental ESP-SR WakeNet path. Also enables AFE VAD and changes the AFE type/output behavior. Leave off for ESPHome Micro Wake Word. |
-| `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of AFE output. Remove it after mapping/testing. |
+| `audio_adc` | yes | — | Configured ESPHome `audio_adc` ID. It only initializes the codec; this component creates and owns the paired I2S RX/TX channels. |
+| `mclk_pin` / `bclk_pin` / `lrclk_pin` / `din_pin` / `dout_pin` | yes | — | I2S pins; this component is the bus master. MCLK/BCLK/LRCLK/DOUT are outputs, DIN is an input. RX and TX share the clocks so capture, reference, and playback stay synchronized. |
+| `i2s_port` | no | `0` | ESP-IDF I2S port (`0`–`2`; chip-dependent). |
+| `tdm_slots` | no | `4` | Number of TDM slots; currently exactly `4`. |
+| `microphone_slots` | no | `[0, 1]` | One to four distinct RX slots (`0`–`3`). Physical slot numbers are mapped to dense internal channel storage. |
+| `reference_source` | no | `analog_slot` | `analog_slot` reads the loopback from an ADC slot (preferred); `playback` uses a mono copy of accepted speaker PCM. |
+| `reference_slot` | no | `2` | RX slot for the analog reference; must differ from the microphone slots. |
+| `reference_delay_samples` | no | `0` | `0`–`4000` with `playback`; `0`–`256` with `analog_slot`. 16 samples = 1 ms at 16 kHz. SpeexDSP also adapts over a range of delays itself, so this only needs to be roughly right. |
+| `tx_slots` | no | `[0, 1]` | Two TDM TX slots consumed by the DAC (mono is duplicated; stereo maps L/R). |
+| `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of DSP output; for slot mapping. Also settable at runtime via `set_diagnostic_raw_slot(n)` (`-1` restores DSP output). |
+| `frame_size` | no | `256` | Processing frame in samples; power of two, `128`–`1024`. 256 = 16 ms. Larger frames amortize FFT overhead but increase latency. |
+| `filter_length` | no | `2048` | AEC tail length in samples (`256`–`16384`, ≥ `frame_size`). This is the main quality knob: see [choosing an echo filter length](#choosing-an-echo-filter-length). |
+| `output_channel` | no | `first` | `first`, `second`, or `mixed` (average; requires two microphone slots and runs two cancellers). Superseded by `beamforming`. |
+| `beamforming` | no | disabled | Post-AEC adaptive delay-and-sum configuration below. Requires at least two microphone slots. |
+| `noise_suppression` | no | `true` | Speex preprocessor denoise (stationary noise: hiss, fan, hum). |
+| `noise_suppression_level_db` | no | `15` | Maximum attenuation in dB (`5`–`60`). Higher absorbs more noise — and more speech. The residual-echo suppressor shares this gain machinery. |
+| `agc` | no | `true` | Speex automatic gain control on the cleaned output. |
+| `agc_target_level` | no | `0.25` | Target level as a fraction of full scale (`0.01`–`1.0`). `0.25` ≈ −12 dBFS. Values near `1.0` clip on loud syllables. |
+| `vad` | no | `true` | Speex voice activity detection on the processed channel. |
+| `vad_threshold` | no | `35` | Speech-start probability in percent (`20`–`90`). The speech-continue threshold stays at Speex's 20 %. |
+| `echo_suppress_db` | no | `40` | Residual-echo suppression (dB) applied by the preprocessor during far-end-only audio (`5`–`60`). |
+| `echo_suppress_active_db` | no | `15` | Residual-echo suppression (dB) during double-talk. Lower preserves near-end speech. |
+| `playback_gain_db` | no | `0` | Digital attenuation (`-60`–`0` dB) before the I2S TX and the reference tap. Use it to prevent DAC/amplifier/reference-loopback clipping. |
+| `resampler` | no | `false` | Enable the playback drift-compensating resampler around 16 kHz. |
+| `meters` | no | disabled | Compile an `AECSpeexDspMetersComponent`; accepts a nested component `id` and `enabled` (default `true`). Exposes per-slot RMS/peak, reference and cleaned-output levels, clipping/alternation stats, and a UI-gated 32-bin spectrum. |
 | `telemetry` | no | `false` | Compile periodic `AEC_EFFECT` attenuation/correlation logging. |
+| `profiling` | no | `false` | Compile per-stage frame profiling counters. |
 | `slot_logs` | no | `false` | Compile five-second raw-slot and output level logging. |
-| `diagnostics` | no | `false` | Compile five-second error, timing, buffer, and reference statistics. |
-| `meters` | no | disabled | Compile an `AECAudioMetersComponent`; accepts a nested component `id`. |
+| `diagnostics` | no | `false` | Compile five-second error, timing, buffer, and VAD statistics. |
 
-`aec_mode`, NLP, filter length, and the optional stages are passed into ESP-SR.
-ESP-SR recommends FD low-cost as the general balance of quality and resource
-use. Its published ESP32-P4 single-channel figures for the standalone FD AEC
-are about 19 KB internal RAM plus 102 KB PSRAM in low-cost mode, and 8 KB plus
-138 KB in high-performance mode; the complete dual-microphone AFE and this
-component's buffers require more.
+### `beamforming`
 
-### Choosing a filter length
+| Option | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Enable post-AEC adaptive delay-and-sum beamforming. Each microphone retains its own stable echo path; localization runs on echo-cancelled signals and one shared preprocessor runs after the aligned sum. |
+| `max_lag` | `3` | Maximum TDOA in samples (`1`–`8`). Set from microphone spacing: at 16 kHz, sound travels about one sample per 21 mm (50 mm ≈ 2.3 samples, 135 mm ≈ 7 samples). |
+| `update_frames` | `8` | Re-localization interval in processing frames. Eight 256-sample frames is 128 ms. |
+| `min_rms` | `120` | Minimum input RMS accepted by the localizer. |
+| `min_correlation_percent` | `50` | Minimum normalized positive correlation for a valid delay. |
+| `min_peak_dominance_percent` | `5` | Required margin over the best non-adjacent correlation peak. Invalid, weak, or ambiguous peaks retain the previous stable direction rather than steering on noise. |
 
-`filter_length` is an ESP-SR tuning parameter, not a duration in PCM samples.
-A higher value gives the canceller more capacity to model a longer or more
-complex echo path, but it also increases the amount of work required for every
-real-time audio frame. The maximum accepted value is therefore not necessarily
-a usable value for a complete ESPHome device.
+### Microphone child
 
-Use these values as practical starting points:
+| Option | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `platform` | yes | — | Must be `aec_speexdsp`. |
+| `id` | yes | — | ESPHome microphone ID. |
+| `aec_speexdsp_id` | yes | — | Parent hub ID. |
+| `bits_per_sample` / `num_channels` / `sample_rate` | no | `16` / `1` / `16000` | Fixed values. |
 
-| Configuration | Recommended value | Reason |
-| --- | ---: | --- |
-| New-board bring-up | `4` | Leaves CPU headroom while slots, levels, and routing are still being diagnosed. |
-| Waveshare 7B calibration firmware | `4` | Leaves headroom for correlation analysis, meters, logging, and the display UI. |
-| Waveshare 7B voice assistant | `8` | Highest production setting measured to sustain the complete voice pipeline with speech enhancement enabled. |
+### Speaker child
 
-On the tested Waveshare voice-assistant configuration, `12` could trigger a
-watchdog reset during startup and `10` delivered only about 76% of the required
-microphone data rate. Those figures describe that complete firmware workload,
-not a universal ESP32-P4 limit. Disabling expensive AFE stages or UI diagnostics
-may make a longer filter viable, but the result must be checked for watchdog
-stability, I2S errors, dropped frames, and sustained microphone upload—not just
-for successful compilation or AFE initialization.
+| Option | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `platform` | yes | — | Must be `aec_speexdsp`. |
+| `id` | yes | — | ESPHome speaker ID. |
+| `aec_speexdsp_id` | yes | — | Parent hub ID. |
+| `bits_per_sample` / `num_channels` / `sample_rate` | no | `16` / `1` (or `2`) / `16000` | Fixed values. |
 
-### Fixed task affinity and priority
+Configure the board's top-level `audio_dac:` separately so ESPHome initializes
+the codec; the speaker child does not take an `audio_dac` option.
 
-Task placement is currently fixed in the component rather than configurable in
-YAML:
+### Choosing an echo filter length
 
-| Work | CPU | FreeRTOS priority | Scheduling rationale |
-| --- | ---: | ---: | --- |
-| Playback/I2S TX | 1 | 20 | Latency-sensitive, but normally blocked waiting for I2S DMA; shares CPU 1 with ESPHome's main loop. |
-| AFE feed/fetch wrapper | 0 | 4 | Kept away from the main loop and below ESP-SR's internal AFE worker. |
-| ESP-SR AFE worker | 0 | 5 | Must be able to run after the wrapper feeds it and before the wrapper fetches its result. |
+`filter_length` is a plain sample count of echo tail (16 samples = 1 ms at
+16 kHz), not an abstract unit. It can run up to 16,384 samples — about one
+second of echo path — providing significantly better echo suppression in
+reflective rooms. The tail must cover
+speaker-plus-room decay plus the reference offset, or residual echo remains
+after the canceller converges.
 
-FreeRTOS schedules larger priority numbers first. Giving the wrapper priority
-5 or higher can be counterproductive: it may preempt the ESP-SR worker whose
-result it is waiting for, especially with a long filter. When one frame takes
-longer than its real-time budget, the wrapper briefly yields instead of
-monopolising CPU 0 until the watchdog fires.
+| Room / echo path | Recommended value | Tail time |
+| --- | ---: | ---: |
+| Very close, well-damped speaker setup | `512` | ~32 ms |
+| Small rooms, direct speaker-to-microphone path | `1024` | ~64 ms |
+| Typical indoor echo tail (default) | `2048` | ~128 ms |
+| Large or reflective rooms, long playback-path latency | `4096` | ~256 ms |
 
-### Automatic playback rate matching
+Longer filters cost CPU and memory; the canceller state prefers internal RAM
+and falls back to PSRAM automatically. Validate any increase against the DSP
+load log and sustained microphone throughput as described in
+[Testing & Tuning]({{ '/tuning/' | relative_url }}).
+
+### Performance checklist
+
+The engine is plain C compiled from source, so build settings matter:
+
+1. **Compile with `-O2`, not `-Os`.** ESPHome's default is size optimization
+   (`CONFIG_COMPILER_OPTIMIZATION_SIZE`), which makes the floating-point DSP
+   loops several times slower. Add to the `esp32:` framework
+   `sdkconfig_options` (both keys are required — they form a Kconfig choice
+   and the size default must be explicitly cleared):
+   ```yaml
+   sdkconfig_options:
+     CONFIG_COMPILER_OPTIMIZATION_SIZE: "n"
+     CONFIG_COMPILER_OPTIMIZATION_PERF: "y"
+   ```
+2. **Keep the canceller state in internal RAM.** The allocator prefers
+   internal RAM and falls back to PSRAM automatically; the startup memory log
+   confirms the split. PSRAM-resident state measurably slows the frame loop —
+   if the log shows PSRAM usage, reduce `filter_length` until the state fits.
+3. Run the chip at its maximum `cpu_frequency`.
+4. **The FFT runs on ESP-DSP.** The vendored `fftwrap.c` uses the Espressif
+   `espressif/esp-dsp` FFT (added automatically as a managed component): on
+   ESP32-S3 and ESP32-P4 its float FFT uses the chip's SIMD instructions;
+   other targets fall back to ANSI C. `spx_ifft` is built from the forward
+   transform via the re/im-swap identity.
+5. Only then reach for smaller `filter_length` values.
+
+### C++ / lambda API
+
+```yaml
+esphome:
+  on_boot:
+    then:
+      - lambda: |-
+          id(voice_audio).start_capture();      // record 3 s of cleaned mono
+```
+
+- `start_capture(frames)`, `get_capture_state()`, `get_capture_frames()`,
+  `play_capture()` — record the cleaned stream to PSRAM and queue it back
+  through the speaker (delay/reference tuning aid).
+- `get_vad_state()` / `get_vad_probability()` — current speech activity of the
+  primary processed channel.
+- `reset_audio_activity()` / `audio_silent_for(ms)` — inactivity meters for
+  barge-in policies (`VOICE_ASSISTANT_BARGE_IN` is honoured).
+
+The optional meters component is configured on the hub:
+
+```yaml
+aec_speexdsp:
+  # ...
+  meters:
+    id: audio_meters
+```
+
+It exposes per-slot RMS/peak, reference and cleaned-output levels,
+clipping/alternation statistics, and a 32-bin spectrum. The spectrum costs CPU
+in the real-time audio task and is off until explicitly enabled:
+
+```yaml
+esphome:
+  on_boot:
+    then:
+      - lambda: id(audio_meters).set_spectrum_enabled(true);
+```
+
+## Automatic playback rate matching
 
 Enable rate matching when Home Assistant playback is nominally 16 kHz but long
 responses slowly underrun or overrun:
 
 ```yaml
-aec_audio:
+aec_speexdsp:
   # ...
   resampler: true
 ```
@@ -115,61 +183,3 @@ See [How It Works]({{ '/architecture/' | relative_url }}#playback-automatic-rate
 for the control flow and [Testing & Tuning]({{ '/tuning/' | relative_url }}#automatic-rate-matching)
 for validation.
 
-## Microphone child
-
-| Option | Required | Default | Description |
-| --- | :---: | --- | --- |
-| `platform` | yes | — | Must be `aec_audio`. |
-| `id` | yes | — | ESPHome microphone ID. |
-| `aec_audio_id` | yes | — | Parent hub ID. |
-| `bits_per_sample` | no | `16` | Only `16` is accepted. |
-| `num_channels` | no | `1` | Only mono is accepted. |
-| `sample_rate` | no | `16000` | Only 16 kHz is accepted. |
-
-## Speaker child
-
-| Option | Required | Default | Description |
-| --- | :---: | --- | --- |
-| `platform` | yes | — | Must be `aec_audio`. |
-| `id` | yes | — | ESPHome speaker ID. |
-| `aec_audio_id` | yes | — | Parent hub ID. |
-| `bits_per_sample` | no | `16` | Only `16` is accepted. |
-| `num_channels` | no | `1` | `1` or `2`. |
-| `sample_rate` | no | `16000` | Only 16 kHz is accepted. |
-
-Configure the board's `audio_dac` separately so ESPHome initializes the codec.
-The `aec_audio` speaker writes TDM data directly and does not accept an
-`audio_dac` option.
-
-## Optional meters and C++ test API
-
-```yaml
-aec_audio:
-  # ...
-  meters:
-    id: audio_meters
-```
-
-The meter object exposes raw-slot RMS/peak, reference level, cleaned-output
-level and peaks, clipping/alternation statistics, and a 32-bin spectrum. The
-spectrum costs CPU in the real-time audio task and is off until explicitly
-enabled:
-
-```yaml
-esphome:
-  on_boot:
-    then:
-      - lambda: id(audio_meters).set_spectrum_enabled(true);
-```
-
-The hub also has a C++/lambda-only diagnostic capture API. `start_capture()`
-records up to three seconds of cleaned mono audio into PSRAM;
-`get_capture_state()` and `get_capture_frames()` report progress; and
-`play_capture()` queues the recording to the speaker. There are currently no
-native ESPHome actions for this API.
-
-With `calibration: true`, the hub additionally exposes `calibration.start()`,
-`calibration.cancel()`, `calibration.status()`, and `calibration.delay()` to
-lambdas. Calibration is deliberately opt-in and never runs at boot. See
-[Testing & Tuning]({{ '/tuning/' | relative_url }}#5-align-the-reference) for
-the ready-made Waveshare controls and the validation procedure.

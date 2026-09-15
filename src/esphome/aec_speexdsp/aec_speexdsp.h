@@ -15,62 +15,57 @@
 #include <freertos/semphr.h>
 #include <freertos/ringbuf.h>
 
-#include "esp_afe_sr_iface.h"
-#include "esp_afe_sr_models.h"
+#include "speex_echo.h"
+#include "speex_preprocess.h"
+#include "beamformer.h"
 #include "esphome/components/audio_adc/audio_adc.h"
 #include "esphome/components/microphone/microphone.h"
 #include "esphome/components/ring_buffer/ring_buffer.h"
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/core/component.h"
-#ifdef USE_AEC_AUDIO_CALIBRATION
-#include "calibration.h"
-#endif
 
 namespace esphome {
+namespace aec_speexdsp {
 
-namespace micro_wake_word {
-class MicroWakeWord;
-}
+// The SpeexDSP pipeline is fixed at 16 kHz / 16-bit, matching the rates the
+// microphone and speaker endpoints publish.
+static constexpr uint32_t SAMPLE_RATE = 16000;
 
-namespace aec_audio {
+class AECSpeexDspComponent;
+extern AECSpeexDspComponent *global_aec_speexdsp;
 
-class AECAudioComponent;
-extern AECAudioComponent *global_aec_audio;
-
-enum AECAudioMode : uint8_t {
-  AEC_AUDIO_MODE_FD_LOW_COST = 0,
-  AEC_AUDIO_MODE_FD_HIGH_PERF = 1,
+enum AECSpeexDspReferenceSource : uint8_t {
+  AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT = 0,
+  AEC_SPEEXDSP_REFERENCE_PLAYBACK = 1,
 };
 
-enum AECAudioReferenceSource : uint8_t {
-  AEC_AUDIO_REFERENCE_ANALOG_SLOT = 0,
-  AEC_AUDIO_REFERENCE_PLAYBACK = 1,
+// Which processed microphone channel is published. SpeexDSP has no dual-
+// microphone enhancement stage, so each selected channel runs through its own
+// echo canceller and preprocessor and the output is selected (or mixed) here.
+enum AECSpeexDspOutputChannel : uint8_t {
+  AEC_SPEEXDSP_OUTPUT_FIRST = 0,
+  AEC_SPEEXDSP_OUTPUT_SECOND = 1,
+  AEC_SPEEXDSP_OUTPUT_MIXED = 2,
 };
 
-enum AECAudioNlpLevel : uint8_t {
-  AEC_AUDIO_NLP_NORMAL = 0,
-  AEC_AUDIO_NLP_AGGRESSIVE = 1,
-  AEC_AUDIO_NLP_VERY_AGGRESSIVE = 2,
+enum AECSpeexDspCaptureState : uint8_t {
+  AEC_SPEEXDSP_CAPTURE_IDLE = 0,
+  AEC_SPEEXDSP_CAPTURE_CAPTURING = 1,
+  AEC_SPEEXDSP_CAPTURE_READY = 2,
 };
 
-enum AECCaptureState : uint8_t {
-  AEC_CAPTURE_IDLE = 0,
-  AEC_CAPTURE_CAPTURING = 1,
-  AEC_CAPTURE_READY = 2,
-};
+class AECSpeexDspMicrophone;
+class AECSpeexDspSpeaker;
 
-class AECAudioMicrophone;
-class AECAudioSpeaker;
-
-#ifdef USE_AEC_AUDIO_METERS
-class AECAudioMetersCallback {
+#ifdef USE_AEC_SPEEXDSP_METERS
+class AECSpeexDspMetersCallback {
  public:
   virtual void process_raw(const int16_t *raw, size_t frames, uint8_t slots) = 0;
   virtual void process_reference(const int16_t *ref, size_t frames) = 0;
-  virtual void process_output(const int16_t *planar, size_t frames) = 0;
+  virtual void process_output(const int16_t *mono, size_t frames) = 0;
 };
 
-class AECAudioMetersComponent : public Component, public AECAudioMetersCallback {
+class AECSpeexDspMetersComponent : public Component, public AECSpeexDspMetersCallback {
  public:
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
   void setup() override;
@@ -101,7 +96,7 @@ class AECAudioMetersComponent : public Component, public AECAudioMetersCallback 
 
   void process_raw(const int16_t *raw, size_t frames, uint8_t slots) override;
   void process_reference(const int16_t *ref, size_t frames) override;
-  void process_output(const int16_t *planar, size_t frames) override;
+  void process_output(const int16_t *mono, size_t frames) override;
 
  protected:
   static const uint16_t SPECTRUM_FFT_SIZE = 512;
@@ -138,11 +133,8 @@ class AECAudioMetersComponent : public Component, public AECAudioMetersCallback 
 };
 #endif
 
-class AECAudioComponent : public Component {
+class AECSpeexDspComponent : public Component {
  public:
-#ifdef USE_AEC_AUDIO_CALIBRATION
-  AECCalibration calibration;
-#endif
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
   void setup() override;
   void dump_config() override;
@@ -152,48 +144,69 @@ class AECAudioComponent : public Component {
   void set_pins(int mclk, int bclk, int lrclk, int din, int dout);
   void set_i2s_port(uint8_t port) { this->i2s_port_ = port; }
   void set_tdm_slots(uint8_t slots) { this->tdm_slots_ = slots; }
-  void set_microphone_slots(uint8_t first, uint8_t second) {
-    this->microphone_slots_[0] = first;
-    this->microphone_slots_[1] = second;
-  }
+  void set_microphone_slots(const std::vector<uint8_t> &slots) { this->microphone_slots_ = slots; }
   void set_reference_slot(uint8_t slot) { this->reference_slot_ = slot; }
-  void set_reference_source(AECAudioReferenceSource source) { this->reference_source_ = source; }
+  void set_reference_source(AECSpeexDspReferenceSource source) { this->reference_source_ = source; }
   void set_tx_slots(uint8_t first, uint8_t second) {
     this->tx_slots_[0] = first;
     this->tx_slots_[1] = second;
   }
   void set_diagnostic_raw_slot(int8_t slot) { this->diagnostic_raw_slot_.store(slot); }
-  void set_aec_mode(AECAudioMode mode) { this->aec_mode_ = mode; }
-  void set_nlp_level(AECAudioNlpLevel level) { this->nlp_level_ = level; }
-  void set_filter_length(uint8_t length) { this->filter_length_ = length; }
+  void set_frame_size(uint16_t frame_size) { this->frame_size_ = frame_size; }
+  void set_filter_length(uint16_t length) { this->filter_length_ = length; }
+  void set_output_channel(AECSpeexDspOutputChannel channel) { this->output_channel_ = channel; }
   void set_agc_enabled(bool enabled) { this->agc_enabled_ = enabled; }
-  void set_afe_include_unused_channel(bool enabled) { this->afe_include_unused_channel_ = enabled; }
-  void set_microphone(AECAudioMicrophone *microphone) { this->microphone_ = microphone; }
-  void set_speaker(AECAudioSpeaker *speaker) { this->speaker_ = speaker; }
-  void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
-  void set_playback_gain_db(float db) { this->playback_gain_db_ = db; }
+  void set_agc_target_level(float level) { this->agc_target_level_ = level; }
   void set_noise_suppression_enabled(bool enabled) { this->noise_suppression_enabled_ = enabled; }
-  void set_speech_enhancement_enabled(bool enabled) { this->speech_enhancement_enabled_ = enabled; }
-  void set_wakenet_enabled(bool enabled) { this->wakenet_enabled_ = enabled; }
-  void set_wakenet_running(bool running) { this->wakenet_running_ = running; }
-  bool get_vad_state() const { return this->vad_state_.load(); }
-  void register_micro_wake_word(micro_wake_word::MicroWakeWord *mww) { this->micro_wake_word_ = mww; }
+  void set_noise_suppression_level_db(uint8_t db) { this->noise_suppression_level_db_ = db; }
+  void set_vad_enabled(bool enabled) { this->vad_enabled_ = enabled; }
+  void set_vad_threshold(uint8_t threshold) { this->vad_threshold_ = threshold; }
+  void set_echo_suppress_db(uint8_t db) { this->echo_suppress_db_ = db; }
+  void set_echo_suppress_active_db(uint8_t db) { this->echo_suppress_active_db_ = db; }
+  void set_microphone(AECSpeexDspMicrophone *microphone) { this->microphone_ = microphone; }
+  void set_speaker(AECSpeexDspSpeaker *speaker) { this->speaker_ = speaker; }
+  void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
+  // Digital attenuation applied to media playback before the I2S TX and the
+  // reference tap, keeping the analog chain (amp, loopback) out of clipping.
+  void set_playback_gain_db(float db) { this->playback_gain_db_ = db; }
+  void configure_beamforming(bool enabled, uint8_t max_lag, uint8_t update_frames, uint16_t min_rms,
+                             uint8_t min_correlation_percent, uint8_t min_peak_dominance_percent) {
+    this->beamforming_enabled_ = enabled;
+    this->beamformer_.configure(this->microphone_slots_.size(), max_lag, update_frames, min_rms,
+                                min_correlation_percent, min_peak_dominance_percent);
+  }
 
-#ifdef USE_AEC_AUDIO_METERS
-  void register_meters_callback(AECAudioMetersCallback *callback) { this->meters_callback_ = callback; }
+#ifdef USE_AEC_SPEEXDSP_METERS
+  void register_meters_callback(AECSpeexDspMetersCallback *callback) { this->meters_callback_ = callback; }
 #endif
+
+  bool get_vad_state() const { return this->vad_state_.load(); }
+  float get_vad_probability() const { return this->vad_probability_.load(); }
+  void reset_audio_activity() {
+    const uint32_t now = millis();
+    this->last_microphone_activity_ms_.store(now);
+    this->last_playback_activity_ms_.store(now);
+  }
+  bool audio_silent_for(uint32_t duration_ms) const {
+    const uint32_t now = millis();
+    return now - this->last_microphone_activity_ms_.load() >= duration_ms &&
+           now - this->last_playback_activity_ms_.load() >= duration_ms;
+  }
 
   // Capture API
   void start_capture(size_t frames = CAPTURE_FRAMES) {
     this->capture_target_frames_.store(std::min(frames, CAPTURE_FRAMES));
     this->capture_samples_written_.store(0);
-    this->capture_state_.store(AEC_CAPTURE_CAPTURING);
+    this->capture_state_.store(AEC_SPEEXDSP_CAPTURE_CAPTURING);
   }
-  AECCaptureState get_capture_state() const { return static_cast<AECCaptureState>(this->capture_state_.load()); }
+  AECSpeexDspCaptureState get_capture_state() const {
+    return static_cast<AECSpeexDspCaptureState>(this->capture_state_.load());
+  }
   size_t get_capture_frames() const { return this->capture_samples_written_.load(); }
   size_t play_capture();
   static const size_t CAPTURE_SECONDS = 3;
   static const size_t CAPTURE_FRAMES = CAPTURE_SECONDS * 16000;  // 16 kHz mono
+  // Cap of the runtime analog-reference delay history.
   static constexpr int REFERENCE_DELAY_MAX_SAMPLES = 256;
 
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait);
@@ -204,13 +217,15 @@ class AECAudioComponent : public Component {
   static void audio_task(void *params);
   static void playback_task(void *params);
   bool start_i2s_();
-  bool start_afe_();
+  bool start_dsp_();
+  void destroy_dsp_();
   void run_audio_task_();
   void run_playback_task_();
-  void publish_frame_(const int16_t *raw, size_t frames);
+  uint8_t processed_channels_() const;
+  void publish_frame_(const int16_t *mono, size_t frames);
   void capture_frame_(const int16_t *mono, size_t frames);
   void apply_reference_delay_(int16_t *ref, size_t frames);
-#ifdef USE_AEC_AUDIO_PLAYBACK_RESAMPLER
+#ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
   std::vector<int16_t> resample(const int16_t *input, size_t frames, uint8_t channels);
   void initialise_resampler();
   void record_playback_input_rate_(size_t accepted_bytes, uint8_t channels);
@@ -218,18 +233,21 @@ class AECAudioComponent : public Component {
 #endif
 
   audio_adc::AudioAdc *audio_adc_{nullptr};
-  AECAudioMicrophone *microphone_{nullptr};
-  AECAudioSpeaker *speaker_{nullptr};
+  AECSpeexDspMicrophone *microphone_{nullptr};
+  AECSpeexDspSpeaker *speaker_{nullptr};
   std::shared_ptr<ring_buffer::RingBuffer> playback_buffer_;
   std::shared_ptr<ring_buffer::RingBuffer> reference_buffer_;
   TaskHandle_t audio_task_handle_{nullptr};
   TaskHandle_t playback_task_handle_{nullptr};
   i2s_chan_handle_t rx_handle_{nullptr};
   i2s_chan_handle_t tx_handle_{nullptr};
-  const esp_afe_sr_iface_t *afe_iface_{nullptr};
-  esp_afe_sr_data_t *afe_data_{nullptr};
-  size_t afe_feed_chunksize_{0};
-  size_t afe_fetch_chunksize_{0};
+
+  // AEC remains per physical microphone. Beamforming uses one post-sum
+  // preprocessor to preserve inter-microphone phase and avoid repeated NLP.
+  SpeexEchoState *echo_state_[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  SpeexPreprocessState *preprocess_state_[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  // Mapping of processing-state index to the microphone slot it consumes.
+  uint8_t processed_slots_[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{0, 1, 2, 3};
 
   gpio_num_t mclk_pin_{I2S_GPIO_UNUSED};
   gpio_num_t bclk_pin_{I2S_GPIO_UNUSED};
@@ -238,29 +256,36 @@ class AECAudioComponent : public Component {
   gpio_num_t dout_pin_{I2S_GPIO_UNUSED};
   uint8_t i2s_port_{0};
   uint8_t tdm_slots_{4};
-  uint8_t microphone_slots_[2]{0, 1};
+  std::vector<uint8_t> microphone_slots_{0, 1};
   uint8_t reference_slot_{2};
-  AECAudioReferenceSource reference_source_{AEC_AUDIO_REFERENCE_ANALOG_SLOT};
+  AECSpeexDspReferenceSource reference_source_{AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT};
   uint8_t tx_slots_[2]{0, 1};
   std::atomic<int8_t> diagnostic_raw_slot_{-1};
-  AECAudioMode aec_mode_{AEC_AUDIO_MODE_FD_LOW_COST};
-  AECAudioNlpLevel nlp_level_{AEC_AUDIO_NLP_AGGRESSIVE};
-  uint8_t filter_length_{4};
+  uint16_t frame_size_{256};
+  uint16_t filter_length_{2048};
+  AECSpeexDspOutputChannel output_channel_{AEC_SPEEXDSP_OUTPUT_FIRST};
   bool agc_enabled_{true};
-  bool afe_include_unused_channel_{true};
+  float agc_target_level_{0.25f};
+  bool noise_suppression_enabled_{true};
+  uint8_t noise_suppression_level_db_{15};
+  bool vad_enabled_{true};
+  uint8_t vad_threshold_{35};
+  uint8_t echo_suppress_db_{40};
+  uint8_t echo_suppress_active_db_{15};
   uint16_t reference_delay_samples_{0};
   float playback_gain_db_{0.0f};
   float playback_gain_{1.0f};
+  bool beamforming_enabled_{false};
+  AdaptiveDelayAndSumBeamformer beamformer_;
+  // Runtime analog-reference delay in RAM (no persistence). Seeded from
+  // reference_delay_samples_ at setup.
   std::atomic<int> reference_delay_{0};
   int16_t reference_history_[REFERENCE_DELAY_MAX_SAMPLES + 1]{};
   size_t reference_history_pos_{0};
-  bool noise_suppression_enabled_{true};
-  bool speech_enhancement_enabled_{true};
-  bool wakenet_enabled_{false};
-  std::atomic<bool> wakenet_running_{false};
   std::atomic<bool> vad_state_{false};
-  QueueHandle_t wakenet_queue_{nullptr};
-  micro_wake_word::MicroWakeWord *micro_wake_word_{nullptr};
+  std::atomic<float> vad_probability_{0.0f};
+  std::atomic<uint32_t> last_microphone_activity_ms_{0};
+  std::atomic<uint32_t> last_playback_activity_ms_{0};
 
   std::atomic<uint32_t> rx_errors_{0};
   std::atomic<uint32_t> tx_errors_{0};
@@ -270,10 +295,11 @@ class AECAudioComponent : public Component {
   std::atomic<uint32_t> dropped_frames_{0};
   std::atomic<uint32_t> max_processing_us_{0};
   std::atomic<bool> buffering_{true};
+  std::atomic<uint32_t> buffering_since_ms_{0};
 
   // Capture buffer (PSRAM, allocated in setup)
   int16_t *capture_buffer_{nullptr};
-  std::atomic<uint8_t> capture_state_{AEC_CAPTURE_IDLE};
+  std::atomic<uint8_t> capture_state_{AEC_SPEEXDSP_CAPTURE_IDLE};
   std::atomic<size_t> capture_samples_written_{0};
   std::atomic<size_t> capture_target_frames_{CAPTURE_FRAMES};
   std::atomic<float> reference_rms_{0.0f};
@@ -295,7 +321,8 @@ class AECAudioComponent : public Component {
   size_t last_logged_play_enqueued_bytes_{0};
   size_t last_logged_playback_drained_bytes_{0};
 
-#ifdef USE_AEC_AUDIO_PLAYBACK_RESAMPLER
+#ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
+  static const uint32_t PLAYBACK_RATE = 16000;
   std::atomic<uint32_t> playback_rate_{0};
   std::atomic<uint32_t> phase_increment_{0};
   std::atomic<uint32_t> input_source_rate_{0};
@@ -310,20 +337,20 @@ class AECAudioComponent : public Component {
   uint8_t input_rate_channels_{0};
 #endif
 
-#ifdef USE_AEC_AUDIO_METERS
-  AECAudioMetersCallback *meters_callback_{nullptr};
+#ifdef USE_AEC_SPEEXDSP_METERS
+  AECSpeexDspMetersCallback *meters_callback_{nullptr};
 #endif
 };
 
-class AECAudioMicrophone : public microphone::Microphone, public Component {
+class AECSpeexDspMicrophone : public microphone::Microphone, public Component {
  public:
-  ~AECAudioMicrophone();
+  ~AECSpeexDspMicrophone();
   void setup() override;
   void dump_config() override;
   void loop() override;
   void start() override;
   void stop() override;
-  void set_parent(AECAudioComponent *parent) { this->parent_ = parent; }
+  void set_parent(AECSpeexDspComponent *parent) { this->parent_ = parent; }
   void publish(const uint8_t *data, const size_t data_size);
   void request_pre_roll();
   void begin_pre_roll_replay();
@@ -337,7 +364,7 @@ class AECAudioMicrophone : public microphone::Microphone, public Component {
   static constexpr size_t BUFFER_BYTES = 16000 * sizeof(int16_t) * 4;
   static constexpr size_t DELIVERY_BYTES = 1024;
   static constexpr size_t HISTORY_BYTES = 16000 * sizeof(int16_t);
-  AECAudioComponent *parent_{nullptr};
+  AECSpeexDspComponent *parent_{nullptr};
   std::atomic<uint8_t> listeners_{0};
   SemaphoreHandle_t buffer_mutex_{nullptr};
   uint8_t *buffer_{nullptr};
@@ -357,17 +384,15 @@ class AECAudioMicrophone : public microphone::Microphone, public Component {
   uint32_t last_delivery_ms_{0};
   std::atomic<uint32_t> dropped_bytes_{0};
   uint32_t last_overflow_log_ms_{0};
-  uint32_t last_heap_log_ms_{0};
   std::vector<uint8_t> vec;
-
 };
 
-class AECAudioSpeaker : public speaker::Speaker, public Component {
+class AECSpeexDspSpeaker : public speaker::Speaker, public Component {
  public:
   void setup() override;
   void dump_config() override;
   void loop() override;
-  void set_parent(AECAudioComponent *parent) { this->parent_ = parent; }
+  void set_parent(AECSpeexDspComponent *parent) { this->parent_ = parent; }
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) override;
   size_t play(const uint8_t *data, size_t length) override;
   void start() override;
@@ -377,10 +402,10 @@ class AECAudioSpeaker : public speaker::Speaker, public Component {
   void notify_output(uint32_t frames, int64_t timestamp) { this->audio_output_callback_(frames, timestamp); }
 
  protected:
-  AECAudioComponent *parent_{nullptr};
+  AECSpeexDspComponent *parent_{nullptr};
 };
 
-}  // namespace aec_audio
+}  // namespace aec_speexdsp
 }  // namespace esphome
 
 #endif

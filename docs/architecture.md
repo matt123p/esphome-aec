@@ -4,67 +4,66 @@ title: How It Works
 
 # How It Works
 
-This page describes the signal-processing pipeline the component configures and
-the audio data flow through the wrapper. See
+This page describes the signal-processing pipelines the components configure
+and the audio data flow through their wrappers. See
 [Hardware & Audio Design]({{ '/hardware/' | relative_url }}) for the physical
 signals these pipelines consume.
 
-![System diagram showing capture, ESP-SR processing, Home Assistant, playback, and the AEC feedback paths]({{ '/assets/diagrams/aec-system.svg' | relative_url }})
+![System diagram showing capture, echo-cancellation processing, Home Assistant, playback, and the AEC feedback paths]({{ '/assets/diagrams/aec-system.svg' | relative_url }})
 
-*The capture and playback paths run together: the reference lets ESP-SR
-identify the device's own loudspeaker audio in the microphone signals.*
+*The capture and playback paths run together: the reference lets the echo
+canceller identify the device's own loudspeaker audio in the microphone
+signals.*
 
-## The AFE pipeline
+## The SpeexDSP pipeline
 
-Think of the AFE as a sequence of audio-cleaning stages between the physical
-microphones and speech recognition. This wrapper supplies two microphone
-signals and one reference signal, and receives one enhanced microphone signal
-back.
+The pipeline uses the open-source
+[Xiph SpeexDSP](https://github.com/xiph/speexdsp) library, vendored inside the
+component. Per processed microphone channel it runs:
 
-The pipeline works as follows:
+1. **Capture synchronized signals.** One to four microphones and the playback
+   reference are read from the shared TDM clock domain, or the software
+   reference is aligned as closely as it can be.
+2. **Linear acoustic echo cancellation.** `speex_echo_cancellation()` adapts a
+   frequency-domain filter — up to 16,384 samples (~1 s) of echo tail —
+   between the reference and each microphone, and subtracts the estimated
+   echo. The long filter is this component's main advantage: the tail must
+   cover speaker-plus-room decay plus the reference offset, or residual echo
+   remains after convergence.
+3. **Nonlinear processing.** `speex_preprocess_run()` applies residual-echo
+   suppression (consuming the canceller's echo state), with separate
+   suppression targets for far-end-only audio and double-talk so near-end
+   speech survives.
+4. **Channel selection or beamforming.** Without beamforming, the published
+   channel is `first`, `second`, or the average of two independently
+   processed channels (`mixed`). With `beamforming`, each microphone keeps its
+   own adaptive echo filter inside one Speex multichannel state; an
+   allocation-free fixed-point localizer (normalized cross-correlation with
+   Q15 sub-sample interpolation) estimates the inter-microphone delay, and an
+   adaptive delay-and-sum beamformer produces one mono stream. Weak or
+   ambiguous correlations retain the previous stable direction.
+5. **Noise suppression, AGC, and VAD.** The same preprocessor pass reduces
+   stationary noise, normalizes the level toward `agc_target_level`, and
+   reports voice activity via `get_vad_state()` / `get_vad_probability()`.
+6. **Publish enhanced mono audio.** The cleaned 16-bit, 16 kHz stream feeds
+   the same pre-roll and live microphone ring buffers described below.
 
-1. **Capture synchronized signals.** Two microphones and the playback reference
-   must describe the same moment in time. The component continuously reads them
-   from the shared audio clock domain or aligns the software reference as
-   closely as it can.
-2. **Acoustic echo cancellation (AEC).** The AFE compares the known reference
-   with the sound captured by each microphone. It estimates how the amplifier,
-   speaker, enclosure, room, and signal delay transformed that reference, then
-   subtracts the estimated echo. This is adaptive: it learns and follows the
-   echo path while audio runs.
-3. **Nonlinear processing (NLP).** Linear subtraction cannot remove every
-   residual, especially when a small speaker distorts. NLP suppresses remaining
-   echo. Higher NLP levels suppress more aggressively but can also cause more
-   distortion.
-4. **Two-microphone speech enhancement.** Because both microphones hear the
-   wanted voice and interference differently, the AFE can combine their
-   information to favour the clearer speech signal and reject some interfering
-   sound. Espressif may describe parts of this stage as speech enhancement,
-   BSS (blind source separation), or MISO channel selection depending on the
-   selected AFE pipeline.
-5. **Noise suppression (NS).** The AFE reduces relatively steady non-speech
-   noise such as fans, electrical hiss, or room noise. It is not a general sound
-   remover and cannot perfectly isolate speech in every environment.
-6. **Voice activity and wake word, when requested.** The AFE can report whether
-   speech is present and can host Espressif WakeNet. In this wrapper those stages
-   are enabled together by the experimental `wakenet` option. The normal
-   recommendation is to leave it disabled and feed the cleaned stream to
-   ESPHome Micro Wake Word.
-7. **Automatic gain control (AGC).** AGC raises quiet speech and controls loud
-   speech so the final signal stays in a range that downstream recognition can
-   use. It cannot repair an ADC signal that was already clipped.
-8. **Publish enhanced mono audio.** The AFE returns one 16-bit, 16 kHz channel.
-   The wrapper buffers it and publishes it as an ESPHome microphone.
+Processing runs on a dedicated task pinned to core 0 at priority 4. The audio
+task logs its own load every five seconds at INFO level:
 
-These stages interact rather than behaving like independent desktop audio
-filters. Enabling every option is not necessarily better, and some combinations
-do not exist in Espressif's target-specific AFE binaries. Start with the
-known-good configuration before tuning one stage at a time.
+```text
+DSP load: 313 frames in 5002 ms: processing avg 2210 us/frame (13.8% of real time), peak 4980 us (31.1%), frame budget 16000 us
+```
 
-If an AFE fetch fails, the component falls back to the first selected raw
-microphone channel for that frame and increments its dropped-frame counter.
-Setting `diagnostic_raw_slot` deliberately bypasses the AFE and publishes that
-raw slot as mono, which is useful for finding the physical TDM mapping.
+The percentage is the share of one core used to keep up with 16 kHz. Load
+scales with `filter_length`, `frame_size`, channel count, and the meters;
+values near 100% mean the canceller can no longer keep up and frames will be
+dropped. At startup the component also logs where the canceller state was
+allocated:
+
+```text
+SpeexDSP state memory: 118 KB internal, 0 KB PSRAM
+```
 
 ## Rolling pre-buffer and wake-word hand-off
 
@@ -164,18 +163,14 @@ nominally 16 kHz PCM. Mono and stereo are both supported.
 
 ### Task scheduling, CPU affinity, and priority
 
-The playback task runs at priority 20 on CPU 1. It spends most of its time
-blocked in the I2S write, so it can safely share that CPU with ESPHome's main
-loop. The AFE feed/fetch wrapper runs on CPU 0 at priority 4, below ESP-SR's
-internal AFE worker at priority 5. This ordering prevents the wrapper from
-repeatedly preempting the worker whose output it is waiting for. If processing
-exceeds one audio-frame period, the wrapper explicitly yields to avoid starving
-system tasks and triggering the watchdog. Per-frame buffers use internal RAM;
-playback and reference queues use ESPHome ring buffers.
+Task placement is fixed in the component: the DSP processing task runs on
+core 0 at priority 4, and the playback/I2S TX task on core 1 at priority 20.
+If a frame exceeds its real-time budget (`frame_size` / 16 kHz), the task
+explicitly yields so Wi-Fi and the main loop are never starved; over-budget
+frames are visible as dropped frames and `rx_errors`.
 
-These priorities are intentionally asymmetric. Priority 20 protects continuous
-I2S transmission from ordinary application work, while priority 4 does not mean
-that AFE processing is unimportant: the actual processing runs in ESP-SR's
-priority-5 worker. The component task is chiefly a producer/consumer wrapper
-around that worker. Raising the wrapper priority can reduce throughput rather
-than improve it.
+FreeRTOS schedules larger priority numbers first. These priorities are
+intentionally asymmetric. Priority 20 protects continuous I2S transmission
+from ordinary application work, while priority 4 does not mean that audio
+processing is unimportant. Per-frame buffers use internal RAM; playback and
+reference queues use ESPHome ring buffers.

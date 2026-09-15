@@ -1,7 +1,8 @@
 # Waveshare 7B Voice Assistant
 
 This is a focused, fully integrated Home Assistant voice satellite for the
-Waveshare ESP32-P4-WIFI6-Touch-LCD-7B. 
+Waveshare ESP32-P4-WIFI6-Touch-LCD-7B, built on the recommended
+`aec_speexdsp` component.
 
 - local Micro Wake Word detection using “Alexa”;
 - continuous Home Assistant voice-assistant conversations;
@@ -21,9 +22,9 @@ during long spoken responses. See
 
 Playback is digitally attenuated by 12 dB before the DAC and AEC reference tap
 because the board's hardware reference can otherwise clip near full scale. The
-AEC filter length is set to `8`, the tested production ceiling with
-speech enhancement enabled; longer values caused watchdog or upload-rate
-failures on the reference configuration.
+AEC filter length is set to `2048` samples (~128 ms), a typical indoor echo
+tail; raise it toward `4096` in reflective rooms while the `DSP load` log stays
+comfortably below 100%.
 
 ## Use it
 

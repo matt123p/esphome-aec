@@ -10,34 +10,28 @@ substitute for good physical audio design.
 
 ## Supported processors
 
-This component pins `espressif/esp-sr` version `2.4.6` and selects its
-full-duplex modes (`AEC_MODE_FD_LOW_COST` or `AEC_MODE_FD_HIGH_PERF`). Espressif
-added full-duplex AEC and AFE for **ESP32-S3 and ESP32-P4** in ESP-SR 2.4.3.
-Those are therefore the supported processor families for this component.
+`aec_speexdsp` is plain C compiled from the vendored, BSD-licensed SpeexDSP
+sources, so it builds for any ESP32 variant. It is most efficient on variants
+with a hardware FPU — **ESP32, ESP32-S2, ESP32-S3, and ESP32-P4**. RISC-V
+variants (ESP32-C3/C5/C6) lack an FPU and run the floating-point DSP in slow
+software float, which is not recommended for real-time AEC. Because there are
+no closed-source binaries, the echo canceller can run with significantly long
+filters (up to ~1 s of echo tail), providing significantly better echo
+suppression.
 
-Espressif provides and tests the underlying full-duplex AFE binaries for the
-ESP32-S3 and ESP32-P4 targets. This ESPHome wrapper is known to work on the
-**ESP32-P4** in the
+The component is known to work on the **ESP32-P4** in the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B),
-which is the reference/test board for the configuration in this repository.
-ESP32-S3 uses the same supported ESP-SR API family, but should be treated as a
-port that still needs board-specific I2S, memory, codec, and acoustic validation
-unless a particular S3 board has also been tested.
+the reference/test board for the configuration in this repository. Other
+variants use the same component API but should be treated as ports that still
+need board-specific I2S, memory, codec, and acoustic validation unless that
+board has also been tested.
 
-ESP-SR's overall target list also contains ESP32, ESP32-S2, ESP32-C3,
-ESP32-C5, ESP32-C6, and ESP32-S31, but that does **not** mean this particular
-full-duplex AFE pipeline is available or tested on them. Some of those targets
-only support other ESP-SR features or models. ESP32-S31 support in the relevant
-package line is preliminary and is not claimed here.
-
-Use:
+The component requires:
 
 - ESP-IDF, not the Arduino framework;
-- an ESP32-S3 or ESP32-P4;
-- PSRAM. The AFE allocation policy uses a balance of internal RAM and PSRAM,
-  and the optional three-second capture buffer alone uses 96 KB of PSRAM;
-- enough CPU headroom for two real-time FreeRTOS tasks and the selected AFE
-  stages.
+- PSRAM (preferred for long canceller tails);
+- enough CPU headroom for two real-time FreeRTOS tasks and the selected
+  processing stages.
 
 ESP32-P4 has no integrated Wi-Fi, so a networked ESPHome device also needs a
 supported companion radio arrangement, such as an ESP32-C6 using ESP-Hosted.
@@ -98,9 +92,10 @@ Board manufacturers, including Waveshare, sometimes describe the **ES7210 as an
 ES7210 is a multi-channel audio ADC: it digitizes the microphones and can
 digitize a hardware reference routed to one of its inputs, but it does not run
 the adaptive echo-cancellation algorithm used here. Actual AEC, nonlinear
-processing, noise suppression, speech enhancement, and AGC run in the ESP-SR
-AFE on the ESP32-S3 or ESP32-P4. An ES7210 is useful AEC-supporting hardware
-only when the board routes the necessary microphone and reference signals to it.
+processing, noise suppression, and AGC run on the ESP32 itself, in the
+SpeexDSP-based `aec_speexdsp` component. An
+ES7210 is useful AEC-supporting hardware only when the board routes the
+necessary microphone and reference signals to it.
 
 The reference hardware is the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B).
@@ -119,12 +114,13 @@ DAC/amplifier delay, gain, nonlinear distortion, or speaker coloration.
 ## Reference audio
 
 AEC needs to know what sound the device intended to play. That known signal is
-called the **reference** or **far-end reference**. The AFE compares it with the
-microphone signals to find the part of the recording caused by the device's own
-speaker. Without a strong, correctly timed reference, the AFE cannot distinguish
-speaker echo from the user's voice and cancellation will be poor.
+called the **reference** or **far-end reference**. The echo canceller compares
+it with the microphone signals to find the part of the recording caused by the
+device's own speaker. Without a strong, correctly timed reference, the
+canceller cannot distinguish speaker echo from the user's voice and
+cancellation will be poor.
 
-This component can obtain the reference in two ways.
+The component can obtain the reference in two ways.
 
 ![Comparison between hardware and software AEC reference paths]({{ '/assets/diagrams/reference-sources.svg' | relative_url }})
 
@@ -149,7 +145,7 @@ not actually connected to playback is not a reference.
 ### Software reference (`playback`)
 
 The software approach copies PCM accepted by the ESPHome speaker into a second
-ring buffer and feeds a mono version to the AFE. It is useful for experiments or
+ring buffer and feeds a mono version to the echo canceller. It is useful for experiments or
 boards with no hardware reference and requires no extra analog connection.
 `reference_delay_samples` attempts to align this copy with the later acoustic
 echo at the microphones.
@@ -164,12 +160,12 @@ hardware reference for dependable full-duplex performance.
 
 ## Microphones
 
-This wrapper requires **two microphone channels** because it configures the
-dual-microphone AFE pipeline. Two microphones give the AFE spatial information:
-a nearby speaker, a person in front of the panel, and background noise reach the
-two capsules at different levels and times. The AFE can use those differences
-to select or enhance the clearer voice component in a way that one microphone
-alone cannot.
+The component accepts one to four microphone slots and processes each channel
+against the reference independently, with an optional post-AEC delay-and-sum
+beamformer to combine them. Two microphones give the device spatial
+information: a nearby speaker, a person in front of the panel, and background
+noise reach the two capsules at different levels and times. The beamformer
+uses those inter-microphone time differences to steer toward the speaker.
 
 The microphones should be the same type, use comparable analogue paths and
 gain, and remain synchronized on the same ADC/TDM clock. Give them meaningful
@@ -182,11 +178,12 @@ loudspeaker can make the two channels inconsistent. Preserve a clear acoustic
 opening for each microphone and avoid placing either in the speaker's immediate
 pressure field.
 
-Compared with publishing either raw microphone directly, the AFE can:
+Compared with publishing either raw microphone directly, echo cancellation
+with two channels can:
 
 - use both channels to favour speech with the better signal-to-noise ratio;
 - suppress some spatial interference and steady background noise;
-- apply echo cancellation to both synchronized microphone observations;
+- apply echo cancellation to each synchronized microphone observation;
 - produce a single enhanced channel, simplifying wake-word and speech-to-text
   consumers;
 - normalize the final level with AGC, improving recognition of users speaking
@@ -194,7 +191,7 @@ Compared with publishing either raw microphone directly, the AFE can:
 
 Those advantages depend on correct slot mapping and matched, unclipped inputs.
 If one channel is silent, swapped with the reference, badly clipped, reversed,
-or has very different gain, dual-microphone enhancement may perform worse than
+or has very different gain, dual-microphone processing may perform worse than
 a clean raw microphone. Test every physical slot before enabling the complete
 pipeline.
 
