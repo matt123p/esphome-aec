@@ -1,0 +1,124 @@
+/* PC replacement for the vendored os_support_custom.h.
+ *
+ * Semantics mirror the ESP build (components/aec_speexdsp/os_support_custom.h):
+ *   - speex_alloc CLEARS memory (upstream speex requirement)
+ *   - speex_alloc_scratch does not clear
+ *   - every allocation is reported to the accounting hooks so the test suite
+ *     can verify init/destroy symmetry and measure state footprints
+ *   - fatal handler aborts the process after reporting
+ */
+#ifndef OS_SUPPORT_CUSTOM_H
+#define OS_SUPPORT_CUSTOM_H
+
+#include "config.h"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Accounting hooks (implemented in shim/pc_mem.cpp). */
+void speexdsp_mem_note_alloc(void *ptr, size_t size);
+void speexdsp_mem_note_free(void *ptr);
+size_t speexdsp_mem_internal_bytes(void);
+size_t speexdsp_mem_psram_bytes(void);
+
+#define OVERRIDE_SPEEX_ALLOC
+static inline void *speex_alloc(int size) {
+   if (size <= 0)
+      return NULL;
+   void *ptr = calloc(1, (size_t) size);
+   if (ptr)
+      speexdsp_mem_note_alloc(ptr, (size_t) size);
+   return ptr;
+}
+
+#define OVERRIDE_SPEEX_ALLOC_SCRATCH
+static inline void *speex_alloc_scratch(int size) {
+   if (size <= 0)
+      return NULL;
+   void *ptr = malloc((size_t) size);
+   if (ptr)
+      speexdsp_mem_note_alloc(ptr, (size_t) size);
+   return ptr;
+}
+
+#define OVERRIDE_SPEEX_FREE
+static inline void speex_free(void *ptr) {
+   if (!ptr)
+      return;
+   speexdsp_mem_note_free(ptr);
+   free(ptr);
+}
+
+#define OVERRIDE_SPEEX_FREE_SCRATCH
+static inline void speex_free_scratch(void *ptr) {
+   if (!ptr)
+      return;
+   speexdsp_mem_note_free(ptr);
+   free(ptr);
+}
+
+#define OVERRIDE_SPEEX_REALLOC
+static inline void *speex_realloc(void *ptr, int size) {
+   if (size <= 0) {
+      speex_free(ptr);
+      return NULL;
+   }
+   speexdsp_mem_note_free(ptr);
+   void *new_ptr = realloc(ptr, (size_t) size);
+   if (new_ptr)
+      speexdsp_mem_note_alloc(new_ptr, (size_t) size);
+   return new_ptr;
+}
+
+#define OVERRIDE_SPEEX_COPY
+#define SPEEX_COPY(dst, src, n) (memcpy((dst), (src), (n) * sizeof(*(dst)) + 0 * ((dst) - (src))))
+
+#define OVERRIDE_SPEEX_MOVE
+#define SPEEX_MOVE(dst, src, n) (memmove((dst), (src), (n) * sizeof(*(dst)) + 0 * ((dst) - (src))))
+
+#define OVERRIDE_SPEEX_MEMSET
+#define SPEEX_MEMSET(dst, c, n) (memset((dst), (c), (n) * sizeof(*(dst))))
+
+#define OVERRIDE_SPEEX_FATAL
+static inline void _speex_fatal(const char *str, const char *file, int line) {
+   fprintf(stderr, "Fatal error in %s, line %d: %s\n", file, line, str);
+   abort();
+}
+
+#define OVERRIDE_SPEEX_WARNING
+static inline void speex_warning(const char *str) {
+#ifndef DISABLE_WARNINGS
+   fprintf(stderr, "warning: %s\n", str);
+#endif
+}
+
+#define OVERRIDE_SPEEX_WARNING_INT
+static inline void speex_warning_int(const char *str, int val) {
+#ifndef DISABLE_WARNINGS
+   fprintf(stderr, "warning: %s %d\n", str, val);
+#endif
+}
+
+#define OVERRIDE_SPEEX_NOTIFY
+static inline void speex_notify(const char *str) {
+#ifndef DISABLE_NOTIFICATIONS
+   fprintf(stderr, "notification: %s\n", str);
+#endif
+}
+
+#define OVERRIDE_SPEEX_PUTC
+static inline void _speex_putc(int ch, void *file) {
+   FILE *f = (FILE *) file;
+   fprintf(f, "%c", ch);
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* OS_SUPPORT_CUSTOM_H */

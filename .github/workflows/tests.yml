@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  aec-speexdsp-tests:
+    name: aec_speexdsp (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install numpy (test signal generation)
+        run: python3 -m pip install numpy
+
+      - name: Run aec_speexdsp test suite
+        run: tests/aec_speexdsp/run_tests.sh
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aec-speexdsp-test-logs
+          path: tests/aec_speexdsp/build/out/
+          if-no-files-found: ignore

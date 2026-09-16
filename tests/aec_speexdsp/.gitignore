@@ -1,0 +1,4 @@
+build/
+test_data/
+pipeline_*_out.wav
+corpus_*.wav

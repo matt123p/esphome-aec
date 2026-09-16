@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added a Linux PC test suite for `aec_speexdsp` (`tests/aec_speexdsp`): the
+  DSP sources are compiled on the host with small ESP-IDF shims and exercised
+  for functional correctness (FFT, AEC, noise suppression, AGC, VAD,
+  beamforming, the full pipeline on generated scenario corpora, robustness
+  against hostile input, and allocation/leak checks) in both release and
+  ASan+UBSan builds. The suite runs on every push and pull request via GitHub
+  Actions.
 - Added the `aec_speexdsp` component: an open-source SpeexDSP-based sibling of
   `aec_audio` providing AEC, noise suppression, AGC, and VAD, with optional
   post-AEC delay-and-sum beamforming, per-slot meters, and the same

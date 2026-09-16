@@ -367,9 +367,6 @@ esphome:
 
 ## References
 
-Optimization validation, PC timings and reproduction commands are recorded in
-[the staged optimization report](../../tests/aec_speexdsp/OPTIMIZATION_RESULTS.md).
-
 - [SpeexDSP (Xiph)](https://github.com/xiph/speexdsp) — BSD license; the
   vendored `mdf.c`, `preprocess.c`, `fftwrap.c`, `filterbank.c`,
   `kiss_fft*.c` and headers are from this library.

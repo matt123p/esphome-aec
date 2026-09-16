@@ -1,0 +1,22 @@
+/* PC build configuration for the vendored SpeexDSP subset.
+ * Mirrors components/aec_speexdsp/config.h but selects the vendored Kiss FFT
+ * backend (USE_KISS_FFT) instead of the ESP-DSP SIMD backend and drops the
+ * ESP_PLATFORM glue, which os_support_custom.h replaces with libc. */
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define HAVE_CONFIG_H 1
+#define OS_SUPPORT_CUSTOM 1
+#define FLOATING_POINT 1
+#ifdef TEST_ESP_DSP
+#define USE_ESP_DSP_FFT 1
+#else
+#define USE_KISS_FFT 1
+#endif
+#define SPEEX_PREPROCESS_LINEAR_GAIN 0
+#define EXPORT
+
+/* No ESP_PLATFORM: the allocator/logging branches in os_support_custom.h fall
+ * back to libc and the allocation accounting lives in shim/pc_mem.cpp. */
+
+#endif /* CONFIG_H */
