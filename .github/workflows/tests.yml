@@ -17,7 +17,7 @@ jobs:
         run: python3 -m pip install numpy
 
       - name: Run aec_speexdsp test suite
-        run: tests/aec_speexdsp/run_tests.sh
+        run: bash tests/aec_speexdsp/run_tests.sh
 
       - name: Upload test logs
         if: always()
