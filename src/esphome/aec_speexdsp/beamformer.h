@@ -23,6 +23,10 @@ class AdaptiveDelayAndSumBeamformer {
                  uint8_t min_correlation_percent, uint8_t min_peak_dominance_percent);
   // stride=1 for planar inputs; stride=channel count for interleaved AEC output.
   void process(const int16_t *const *microphones, size_t samples, int16_t *output, size_t stride = 1);
+  // Apply another beamformer's current steering, with independent sample
+  // history and no localization. Input/output buffers must not overlap.
+  void process_with_steering(const AdaptiveDelayAndSumBeamformer &steering,
+                            const int16_t *const *microphones, size_t samples, int16_t *output, size_t stride = 1);
 
   int32_t get_tdoa_q15(uint8_t microphone) const {
     return microphone < MAX_MICROPHONES ? this->tdoa_q15_[microphone] : 0;
@@ -45,6 +49,7 @@ class AdaptiveDelayAndSumBeamformer {
   static int16_t saturate16_(int32_t value);
   int16_t delayed_sample_(uint8_t microphone, const int16_t *input, size_t index, int32_t delay_q15, size_t stride) const;
   void update_delays_(const int16_t *const *microphones, size_t samples, size_t stride);
+  void apply_delays_(const int16_t *const *microphones, size_t samples, int16_t *output, size_t stride);
 
   uint8_t microphones_{1};
   uint8_t max_lag_{3};

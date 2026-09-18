@@ -22,9 +22,17 @@ during long spoken responses. See
 
 Playback is digitally attenuated by 12 dB before the DAC and AEC reference tap
 because the board's hardware reference can otherwise clip near full scale. The
-AEC filter length is set to `2048` samples (~128 ms), a typical indoor echo
-tail; raise it toward `4096` in reflective rooms while the `DSP load` log stays
-comfortably below 100%.
+example uses `filter_length: 1024` (~64 ms) to leave CPU and internal-RAM
+headroom for beamforming, the display, wake-word processing, and networking.
+The component default is `2048`; increase toward it only while the `DSP load`
+log remains comfortably below 100% and the state remains in internal RAM.
+
+AGC is limited by a reference-aware gate (`agc.gate`): while a response is
+playing, boost is only permitted for audio that sustains pre-AGC RMS above the
+speech threshold, so residual echo is not amplified with the user's voice.
+The gate never mutes audio, and the AEC keeps adapting throughout. See the
+[configuration reference](https://matt123p.github.io/esphome-aec/configuration/#reference-aware-agc-gate)
+for the thresholds and timings.
 
 ## Use it
 

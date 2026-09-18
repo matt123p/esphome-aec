@@ -180,6 +180,18 @@ void AdaptiveDelayAndSumBeamformer::process(const int16_t *const *microphones, s
     this->localization_calls_++;
   }
 
+  this->apply_delays_(microphones, samples, output, stride);
+}
+
+void AdaptiveDelayAndSumBeamformer::process_with_steering(const AdaptiveDelayAndSumBeamformer &steering,
+    const int16_t *const *microphones, size_t samples, int16_t *output, size_t stride) {
+  this->microphones_ = steering.microphones_;
+  std::copy_n(steering.tdoa_q15_, MAX_MICROPHONES, this->tdoa_q15_);
+  this->apply_delays_(microphones, samples, output, stride);
+}
+
+void AdaptiveDelayAndSumBeamformer::apply_delays_(const int16_t *const *microphones, size_t samples,
+                                                 int16_t *output, size_t stride) {
   const uint32_t beamforming_start = esp_cpu_get_cycle_count();
   int32_t latest_q15 = this->tdoa_q15_[0];
   for (uint8_t microphone = 1; microphone < this->microphones_; microphone++)

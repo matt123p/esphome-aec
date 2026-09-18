@@ -142,7 +142,7 @@ aec_speexdsp:
 
   # ID of the configured audio_adc object. It is only used to initialise the
   # ES7210 (or another codec); the I2S peripheral itself is created here.
-  audio_adc: audio_adc_es7210
+  audio_adc: microphone_adc
 
   # I2S pins. All are required. MCLK/BCLK/LRCLK/DOUT are outputs, DIN is an
   # input. RX and TX share the clocks so capture, reference and playback stay
@@ -203,8 +203,8 @@ aec_speexdsp:
   # --- SpeexDSP processing ---------------------------------------------------
 
   # Samples processed per iteration by the echo canceller and preprocessor.
-  # Options: 128 / 192 / 256 / 320 / 384 / 512 / ... (multiple of 64, max
-  # 1024). 256 = 16 ms: a good balance. Larger frames amortise FFT overhead
+  # Options: 128 / 256 / 512 / 1024 (power of two). 256 = 16 ms: a good
+  # balance. Larger frames amortise FFT overhead
   # but increase latency; the whole frame must be processed within its real
   # time budget (frame_size / 16000 seconds).
   frame_size: 256
@@ -225,8 +225,8 @@ aec_speexdsp:
   #   second - microphone_slots[1]
   #   mixed  - both processed independently and averaged (requires two
   #            microphone slots; runs two cancellers: ~2x CPU/memory)
-  # SpeexDSP has no beamforming, so there is no dual-mic enhancement stage;
-  # this is a selection between channels, not a combination of them.
+  # Upstream SpeexDSP has no beamformer. When this component's optional
+  # beamformer below is disabled, this selects the published channel.
   output_channel: first
 
   # Post-AEC adaptive delay-and-sum beamforming. Each microphone retains its
@@ -255,14 +255,78 @@ aec_speexdsp:
   noise_suppression_level_db: 10
 
   # Speex automatic gain control on the cleaned output: raises quiet speech
-  # and tames loud speech toward agc_target_level. Options: true / false.
-  agc: true
-
-  # AGC target level as a fraction of digital full scale. Options: 0.01 - 1.0.
-  # 0.25 ≈ -12 dBFS (Speex's own default of 8000/32768 ≈ 0.244). Values near
-  # 1.0 will slam into clipping on loud syllables; recognition engines are
-  # happiest well below full scale.
-  agc_target_level: 0.25
+  # and tames loud speech toward agc.target_level. max_gain is in dB.
+  agc:
+    # Enable automatic level adjustment after echo/noise suppression.
+    # Disable to hear unamplified DSP output when diagnosing echo or pumping;
+    # also disable gate.enabled below if disabling AGC.
+    enabled: true
+    # Maximum boost in dB (0-60); 12 dB is about 4x amplitude. This is a cap,
+    # not a fixed gain. Lower if noise/echo is amplified too much; raise only
+    # if genuine speech remains too quiet. 0 prevents boost, not attenuation.
+    max_gain: 12
+    # Perceptual loudness target as a fraction of full scale (0.01-1.0).
+    # 0.25 is nominally -12 dBFS, not a guaranteed output waveform RMS.
+    # Raise for louder speech output, lower for more headroom; max_gain still
+    # limits boost, and the gate can temporarily prevent it entirely.
+    target_level: 0.25
+    # Reference-aware AGC eligibility: controls BOOST, never mutes samples.
+    # With no active reference, normal AGC runs even for quiet speech.
+    # During playback, eligible speech gets normal AGC; ineligible audio
+    # loses boost and does not update the AGC loudness estimate.
+    # RMS thresholds are linear int16 PCM counts, NOT dB. Reference RMS is
+    # measured from the AEC reference; speech RMS is windowed, suppressed
+    # audio BEFORE AGC (AGC_GATE pre_agc_rms), not the final output meter.
+    # Both threshold pairs require 0 < close < open <= 32768.
+    # All delays below are 0-60000 ms, rounded up to audio-frame boundaries
+    # (16 ms at frame_size=256). Existing overlap-add adds transition latency.
+    gate:
+      # Enable reference-aware boost protection. Disable for ordinary AGC
+      # throughout playback as a comparison; quiet residual echo may be boosted.
+      enabled: true
+      # Reference RMS at/above this marks playback active immediately.
+      # Lower if quiet playback is missed; raise if reference noise falsely
+      # activates protection. Keep above the measured idle/comfort-noise floor.
+      reference_open_rms: 200
+      # While active, reference RMS must stay BELOW this for tail_ms to end
+      # playback protection. Between close/open, the previous state persists.
+      # Raise if comfort noise prevents release; lower if protection releases
+      # during quiet playback. Must stay below reference_open_rms.
+      reference_close_rms: 100
+      # During playback, pre-AGC RMS must stay at/above this for open_delay_ms
+      # to permit boost (after startup_guard_ms). Lower if normal speech cannot
+      # acquire boost; raise if residual echo does. This is not speech recognition.
+      open_rms: 24
+      # Once eligible, RMS must stay BELOW this for hold_ms to stop permitting
+      # boost. Lower to retain quiet word endings; raise if echo keeps AGC eligible.
+      # Between close/open, eligibility persists. Must stay below open_rms.
+      close_rms: 12
+      # Continuous above-open speech confirmation time. Lower for faster boost
+      # on short words; raise to reject brief echo/noise spikes. 0 allows the
+      # first qualifying frame; no audio is discarded while waiting.
+      open_delay_ms: 32
+      # Keep speech eligible through below-close gaps this long. Increase if
+      # boost drops between words; decrease if boost lingers on residual echo.
+      # 0 closes eligibility on the first below-close frame.
+      hold_ms: 250
+      # Continuous below-reference-close time before returning to normal AGC.
+      # Covers acoustic echo tails, word gaps and brief playback underruns.
+      # Increase if protection releases too early; decrease if quiet speech
+      # waits too long for normal AGC after playback. Expiry also re-arms the
+      # startup guard; 0 releases protection on the first quiet reference frame.
+      tail_ms: 250
+      # After speech eligibility closes DURING playback, fade existing boost
+      # toward unity over this time; existing attenuation is preserved.
+      # Lower to remove echo amplification faster; raise for smoother changes.
+      # 0 removes boost immediately. This is not a mute or a playback-tail timer.
+      release_ms: 150
+      # On reference activation, immediately cap gain at unity and block boost
+      # eligibility for this interval while AEC keeps adapting. Then a fresh
+      # open_delay_ms confirmation is required. Increase if onset echo acquires
+      # boost; decrease if genuine speech needs boost sooner at playback start.
+      # Re-arms only after tail_ms of quiet reference; 0 disables this guard.
+      # Audio still passes, so this cannot guarantee elimination of onset echo.
+      startup_guard_ms: 200
 
   # Speex voice activity detection, evaluated on the published channel.
   # State is exposed via id(audio_test).get_vad_state() and

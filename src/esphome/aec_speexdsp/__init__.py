@@ -9,7 +9,6 @@ DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["audio", "microphone", "ring_buffer", "speaker"]
 
 CONF_AGC = "agc"
-CONF_AGC_TARGET_LEVEL = "agc_target_level"
 CONF_AUDIO_ADC = "audio_adc"
 CONF_BCLK_PIN = "bclk_pin"
 CONF_BEAMFORMING = "beamforming"
@@ -58,6 +57,12 @@ OUTPUT_CHANNELS = {
 
 
 def _validate(config):
+    agc_gate = config[CONF_AGC]["gate"]
+    for opening, closing in [("open_rms", "close_rms"), ("reference_open_rms", "reference_close_rms")]:
+        if agc_gate[opening] <= agc_gate[closing]:
+            raise cv.Invalid(f"agc.gate.{opening} must be greater than {closing}")
+    if agc_gate["enabled"] and not config[CONF_AGC]["enabled"]:
+        raise cv.Invalid("agc.gate requires agc.enabled")
     slots = config[CONF_TDM_SLOTS]
     selected = config[CONF_MICROPHONE_SLOTS]
     reference = config[CONF_REFERENCE_SLOT]
@@ -129,8 +134,23 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_NOISE_SUPPRESSION, default=True): cv.boolean,
             cv.Optional(CONF_NOISE_SUPPRESSION_LEVEL_DB, default=15): cv.int_range(min=5, max=60),
-            cv.Optional(CONF_AGC, default=True): cv.boolean,
-            cv.Optional(CONF_AGC_TARGET_LEVEL, default=0.25): cv.float_range(min=0.01, max=1.0),
+            cv.Optional(CONF_AGC, default={}): cv.Schema({
+              cv.Optional("enabled", default=True): cv.boolean,
+              cv.Optional("max_gain", default=12): cv.int_range(min=0, max=60),
+              cv.Optional("target_level", default=0.25): cv.float_range(min=0.01, max=1.0),
+              cv.Optional("gate", default={}): cv.Schema({
+                cv.Optional("enabled", default=False): cv.boolean,
+                cv.Optional("reference_open_rms", default=200): cv.float_range(min=0.01, max=32768),
+                cv.Optional("reference_close_rms", default=100): cv.float_range(min=0.01, max=32768),
+                cv.Optional("open_rms", default=64): cv.float_range(min=0.01, max=32768),
+                cv.Optional("close_rms", default=32): cv.float_range(min=0.01, max=32768),
+                cv.Optional("open_delay_ms", default=32): cv.int_range(min=0, max=60000),
+                cv.Optional("hold_ms", default=250): cv.int_range(min=0, max=60000),
+                cv.Optional("tail_ms", default=250): cv.int_range(min=0, max=60000),
+                cv.Optional("release_ms", default=150): cv.int_range(min=0, max=60000),
+                cv.Optional("startup_guard_ms", default=200): cv.int_range(min=0, max=60000),
+              }),
+            }),
             cv.Optional(CONF_VAD, default=True): cv.boolean,
             # Speex keeps its speech-continue probability at 20%; a start
             # threshold below that would never reset, so clamp the range.
@@ -206,8 +226,14 @@ async def to_code(config):
     ))
     cg.add(var.set_noise_suppression_enabled(config[CONF_NOISE_SUPPRESSION]))
     cg.add(var.set_noise_suppression_level_db(config[CONF_NOISE_SUPPRESSION_LEVEL_DB]))
-    cg.add(var.set_agc_enabled(config[CONF_AGC]))
-    cg.add(var.set_agc_target_level(config[CONF_AGC_TARGET_LEVEL]))
+    agc = config[CONF_AGC]
+    cg.add(var.set_agc_enabled(agc["enabled"]))
+    cg.add(var.set_agc_target_level(agc["target_level"]))
+    cg.add(var.set_agc_max_gain_db(agc["max_gain"]))
+    gate = agc["gate"]
+    cg.add(var.configure_agc_gate(gate["enabled"], gate["reference_open_rms"], gate["reference_close_rms"],
+        gate["open_rms"], gate["close_rms"], gate["open_delay_ms"], gate["hold_ms"], gate["tail_ms"], gate["release_ms"],
+        gate["startup_guard_ms"]))
     cg.add(var.set_vad_enabled(config[CONF_VAD]))
     cg.add(var.set_vad_threshold(config[CONF_VAD_THRESHOLD]))
     cg.add(var.set_echo_suppress_db(config[CONF_ECHO_SUPPRESS_DB]))

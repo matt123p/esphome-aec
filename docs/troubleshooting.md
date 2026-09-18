@@ -20,11 +20,19 @@ title: Troubleshooting & Limitations
 - **Failure to allocate:** confirm PSRAM is enabled and working; remove meters
   and reduce other memory-heavy features.
 - **Long playback slowly underruns or overruns:** enable `resampler` and play a
-  continuous test for at least 30 seconds. Check `Playback input rate` and
-  `Playback rate adjust` logs to confirm the host estimate settles near 16 kHz.
-  If it reaches the 15–17 kHz correction limit, or gaps remain bursty rather
-  than gradual, fix the source or network path. Non-16 kHz audio must be
-  converted before it reaches this component.
+  continuous test for at least 30 seconds. Check `Playback rate adjust` for the
+  measured I2S rate and the gradually adjusted playback rate; the offered and
+  accepted throughput in `Playback input rate` is informational only — bursty
+  delivery is normal. If the playback rate settles at the 15–17 kHz clamp, or
+  gaps remain bursty rather than gradual, fix the source or network path.
+  Non-16 kHz audio must be converted before it reaches this component.
+- **Speech too quiet during playback:** with the AGC gate enabled, boost is
+  withheld until speech proves itself. Check `AGC_GATE` telemetry and lower
+  `agc.gate.open_rms` / `open_delay_ms` / `startup_guard_ms` if genuine speech
+  cannot acquire boost. The gate controls boost only; it never mutes audio.
+- **Echo becomes louder during playback:** AGC is amplifying residual echo.
+  Raise `agc.gate.open_rms`, `open_delay_ms`, or `startup_guard_ms`, or disable
+  `agc.gate.enabled` and improve cancellation first.
 - **Wake word fails only during playback:** first validate AEC independently,
   then run ESPHome Micro Wake Word from `cleaned_microphone`.
 

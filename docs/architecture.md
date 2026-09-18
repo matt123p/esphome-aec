@@ -30,22 +30,25 @@ component. Per processed microphone channel it runs:
    echo. The long filter is this component's main advantage: the tail must
    cover speaker-plus-room decay plus the reference offset, or residual echo
    remains after convergence.
-3. **Nonlinear processing.** `speex_preprocess_run()` applies residual-echo
-   suppression (consuming the canceller's echo state), with separate
-   suppression targets for far-end-only audio and double-talk so near-end
-   speech survives.
-4. **Channel selection or beamforming.** Without beamforming, the published
-   channel is `first`, `second`, or the average of two independently
-   processed channels (`mixed`). With `beamforming`, each microphone keeps its
-   own adaptive echo filter inside one Speex multichannel state; an
+3. **Channel handling.** Without beamforming, each selected microphone passes
+   through its own preprocessor and the published channel is `first`, `second`,
+   or the average of two processed channels (`mixed`). With `beamforming`, each
+   microphone keeps its own adaptive echo filter inside one Speex multichannel
+   state; an
    allocation-free fixed-point localizer (normalized cross-correlation with
    Q15 sub-sample interpolation) estimates the inter-microphone delay, and an
-   adaptive delay-and-sum beamformer produces one mono stream. Weak or
-   ambiguous correlations retain the previous stable direction.
-5. **Noise suppression, AGC, and VAD.** The same preprocessor pass reduces
-   stationary noise, normalizes the level toward `agc_target_level`, and
+   adaptive delay-and-sum beamformer produces one mono stream before a single
+   shared preprocessor. Weak or ambiguous correlations retain the previous
+   stable direction.
+4. **Noise suppression, residual-echo suppression, AGC, and VAD.**
+   `speex_preprocess_run()` consumes the canceller state, applies separate echo
+   suppression targets for far-end-only audio and double-talk, reduces
+   stationary noise, normalizes the level toward `agc.target_level`, and
    reports voice activity via `get_vad_state()` / `get_vad_probability()`.
-6. **Publish enhanced mono audio.** The cleaned 16-bit, 16 kHz stream feeds
+   The optional reference-aware AGC gate limits amplification during
+   playback: ineligible audio loses boost and stops updating the loudness
+   estimate, but samples are never muted and the AEC keeps adapting.
+5. **Publish enhanced mono audio.** The cleaned 16-bit, 16 kHz stream feeds
    the same pre-roll and live microphone ring buffers described below.
 
 Processing runs on a dedicated task pinned to core 0 at priority 4. The audio
@@ -138,23 +141,21 @@ With `resampler: true`, the component automatically matches the incoming host
 stream to the satellite clock:
 
 1. Playback starts at the nominal 16,000 samples per second.
-2. The component measures how many accepted source frames arrive over time. It
-   forms a new estimate only after at least three seconds and two seconds of
-   audio, which avoids reacting to individual network packets.
-3. It also measures the rate at which complete frames are written to the TDM
-   peripheral. That hardware measurement is used until a host-rate estimate is
-   available.
-4. The target is limited to 15,000–17,000 Hz, and the active correction moves
-   toward it one hertz at a time instead of changing abruptly.
-5. A continuous fractional-phase linear interpolator produces slightly more or
+2. The component measures the rate at which complete frames are written to the
+   TDM peripheral. That hardware measurement is the satellite's real playback
+   clock, and it is the only correction target: network delivery is bursty,
+   and its throughput is not the PCM sample rate.
+3. The measured rate is clamped to 15,000–17,000 Hz, and the active correction
+   moves toward it one hertz at a time instead of changing abruptly.
+4. A continuous fractional-phase linear interpolator produces slightly more or
    fewer samples for the fixed 16 kHz output. Phase and the preceding sample
    carry across packet boundaries, avoiding a discontinuity at each packet.
 
-The learned host rate is retained between playback streams so a later response
-can begin with the previous correction. A gap of more than one second resets
-the measurement window, allowing the next stream to establish a fresh estimate.
-Stopping or clearing playback resets interpolation state so samples from two
-unrelated streams are never blended.
+The learned playback rate is retained between streams so a later response can
+begin with the previous correction. Stopping or clearing playback resets
+interpolation state so samples from two unrelated streams are never blended.
+Short-term delivery variation — bursts and gaps from the network — is absorbed
+by the one-second playback buffer rather than by changing voice pitch.
 
 This is automatic transport-clock compensation. It does not decode compressed
 audio, accept a genuinely different sample rate, repair severe network
@@ -163,11 +164,13 @@ nominally 16 kHz PCM. Mono and stereo are both supported.
 
 ### Task scheduling, CPU affinity, and priority
 
-Task placement is fixed in the component: the DSP processing task runs on
-core 0 at priority 4, and the playback/I2S TX task on core 1 at priority 20.
-If a frame exceeds its real-time budget (`frame_size` / 16 kHz), the task
-explicitly yields so Wi-Fi and the main loop are never starved; over-budget
-frames are visible as dropped frames and `rx_errors`.
+The DSP processing task runs on core 0 at priority 4. On dual-core targets the
+playback/I2S TX task runs on core 1 at priority 20; on the single-core ESP32-S2
+it also runs on core 0. Playback normally blocks in the I2S driver, so sharing
+the core on S2 does not mean it continuously consumes CPU. If a frame exceeds
+its real-time budget (`frame_size` / 16 kHz), the processing task yields so
+system work is not starved. Diagnostics report the processing peak; if backlog
+reaches the transport, a later read may also record an `rx_error`.
 
 FreeRTOS schedules larger priority numbers first. These priorities are
 intentionally asymmetric. Priority 20 protects continuous I2S transmission

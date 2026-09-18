@@ -156,7 +156,12 @@ class AECSpeexDspComponent : public Component {
   void set_filter_length(uint16_t length) { this->filter_length_ = length; }
   void set_output_channel(AECSpeexDspOutputChannel channel) { this->output_channel_ = channel; }
   void set_agc_enabled(bool enabled) { this->agc_enabled_ = enabled; }
+  void configure_agc_gate(bool enabled, float ref_open, float ref_close, float open, float close,
+                          int open_ms, int hold_ms, int tail_ms, int release_ms, int startup_guard_ms) {
+    agc_gate_config_ = {enabled, ref_open, ref_close, open, close, open_ms, hold_ms, tail_ms, release_ms, startup_guard_ms};
+  }
   void set_agc_target_level(float level) { this->agc_target_level_ = level; }
+  void set_agc_max_gain_db(int db) { this->agc_max_gain_db_ = db; }
   void set_noise_suppression_enabled(bool enabled) { this->noise_suppression_enabled_ = enabled; }
   void set_noise_suppression_level_db(uint8_t db) { this->noise_suppression_level_db_ = db; }
   void set_vad_enabled(bool enabled) { this->vad_enabled_ = enabled; }
@@ -228,7 +233,6 @@ class AECSpeexDspComponent : public Component {
 #ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
   std::vector<int16_t> resample(const int16_t *input, size_t frames, uint8_t channels);
   void initialise_resampler();
-  void record_playback_input_rate_(size_t accepted_bytes, uint8_t channels);
   void update_playback_rate_(uint32_t write_us, size_t frames);
 #endif
 
@@ -265,7 +269,9 @@ class AECSpeexDspComponent : public Component {
   uint16_t filter_length_{2048};
   AECSpeexDspOutputChannel output_channel_{AEC_SPEEXDSP_OUTPUT_FIRST};
   bool agc_enabled_{true};
+  SpeexAgcGateConfig agc_gate_config_{0, 200.f, 100.f, 64.f, 32.f, 32, 250, 250, 150, 200};
   float agc_target_level_{0.25f};
+  int agc_max_gain_db_{12};
   bool noise_suppression_enabled_{true};
   uint8_t noise_suppression_level_db_{15};
   bool vad_enabled_{true};
@@ -277,6 +283,7 @@ class AECSpeexDspComponent : public Component {
   float playback_gain_{1.0f};
   bool beamforming_enabled_{false};
   AdaptiveDelayAndSumBeamformer beamformer_;
+  AdaptiveDelayAndSumBeamformer raw_beamformer_;
   // Runtime analog-reference delay in RAM (no persistence). Seeded from
   // reference_delay_samples_ at setup.
   std::atomic<int> reference_delay_{0};
@@ -325,16 +332,9 @@ class AECSpeexDspComponent : public Component {
   static const uint32_t PLAYBACK_RATE = 16000;
   std::atomic<uint32_t> playback_rate_{0};
   std::atomic<uint32_t> phase_increment_{0};
-  std::atomic<uint32_t> input_source_rate_{0};
-  std::atomic<uint32_t> input_playback_rate_{0};
-  std::atomic<bool> input_rate_valid_{false};
   uint32_t phase_accumulator_{0};
   int16_t last_samples_[2]{0, 0};
   uint32_t last_playback_rate_log_{0};
-  uint32_t input_rate_window_start_ms_{0};
-  uint32_t input_rate_last_ms_{0};
-  size_t input_rate_window_bytes_{0};
-  uint8_t input_rate_channels_{0};
 #endif
 
 #ifdef USE_AEC_SPEEXDSP_METERS

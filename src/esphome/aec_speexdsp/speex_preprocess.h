@@ -211,6 +211,28 @@ int speex_preprocess_ctl(SpeexPreprocessState *st, int request, void *ptr);
 /** Get preprocessor Automatic Gain Control level (int32) */
 #define SPEEX_PREPROCESS_GET_AGC_TARGET 47
 
+/* Floating-point, last-frame diagnostic power sums, excluding Nyquist.
+   These are spectral units, not time-domain RMS. Read on the DSP thread. */
+#define SPEEX_PREPROCESS_GET_RESIDUAL_DIAGNOSTICS 1002
+#define SPEEX_PREPROCESS_SET_PRE_AGC_METER 1003
+#define SPEEX_PREPROCESS_GET_PRE_AGC_RMS 1004
+#define SPEEX_PREPROCESS_SET_AGC_GATE 1005
+#define SPEEX_PREPROCESS_SET_REFERENCE_RMS 1006
+#define SPEEX_PREPROCESS_GET_AGC_GATE_STATE 1007
+typedef struct {
+   int enabled;
+   float reference_open_rms, reference_close_rms, open_rms, close_rms;
+   int open_ms, hold_ms, tail_ms, release_ms, startup_guard_ms;
+} SpeexAgcGateConfig;
+typedef struct {
+   int reference_active, open, startup_guard;
+   float rms;
+} SpeexAgcGateState;
+typedef struct {
+   float input_power, residual_power, echo_power, noise_power, suppressed_power;
+   float frame_probability, effective_echo_suppress_db;
+} SpeexPreprocessResidualDiagnostics;
+
 #ifdef __cplusplus
 }
 #endif

@@ -156,11 +156,13 @@ aec_speexdsp:
   reference_delay_samples: 7
   tx_slots: [0, 1]
   frame_size: 256
-  filter_length: 2048
+  # The component default is 2048; this full workload uses 1024 for headroom.
+  filter_length: 1024
   noise_suppression: true
   noise_suppression_level_db: 10
   echo_suppress_db: 25
-  agc: true
+  agc:
+    enabled: true
   vad: true
   playback_gain_db: -12
   resampler: true
@@ -183,9 +185,9 @@ loopback slot, use `reference_source: playback` and tune
 hardware reference.
 
 `filter_length` is a plain sample count of echo tail (16 samples = 1 ms at
-16 kHz). It can run long: 2048 samples
-(~128 ms) is the default and a typical indoor tail, 4096 (~256 ms) suits large
-or reflective rooms, and up to 16384 (~1 s) is accepted. Longer filters cancel
+16 kHz). The component default is 2048 samples (~128 ms), while the complete
+Waveshare examples use 1024 (~64 ms) to preserve CPU and internal-RAM headroom.
+Values up to 16384 (~1 s) are accepted. Longer filters can cover
 more echo but cost CPU and memory — see
 [Configuration Reference]({{ '/configuration/' | relative_url }}#choosing-an-echo-filter-length)
 and the [performance notes]({{ '/configuration/' | relative_url }}#performance-checklist).
@@ -197,4 +199,3 @@ paired ESP-IDF TDM RX/TX channels. The speaker child does not take an
 
 For a staged hardware bring-up of a brand-new board, see
 [First-Time Board Setup and AEC Bring-Up]({{ '/first-time-setup/' | relative_url }}).
-

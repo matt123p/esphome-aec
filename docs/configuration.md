@@ -28,8 +28,10 @@ and change one setting at a time.
 | `beamforming` | no | disabled | Post-AEC adaptive delay-and-sum configuration below. Requires at least two microphone slots. |
 | `noise_suppression` | no | `true` | Speex preprocessor denoise (stationary noise: hiss, fan, hum). |
 | `noise_suppression_level_db` | no | `15` | Maximum attenuation in dB (`5`–`60`). Higher absorbs more noise — and more speech. The residual-echo suppressor shares this gain machinery. |
-| `agc` | no | `true` | Speex automatic gain control on the cleaned output. |
-| `agc_target_level` | no | `0.25` | Target level as a fraction of full scale (`0.01`–`1.0`). `0.25` ≈ −12 dBFS. Values near `1.0` clip on loud syllables. |
+| `agc.enabled` | no | `true` | Speex automatic gain control on the cleaned output. |
+| `agc.max_gain` | no | `12` | Maximum AGC boost in dB (`0`–`60`). A cap, not a fixed gain; `0` prevents boost but not attenuation. |
+| `agc.target_level` | no | `0.25` | Target level as a fraction of full scale (`0.01`–`1.0`). `0.25` ≈ −12 dBFS. Values near `1.0` clip on loud syllables. |
+| `agc.gate` | no | disabled | Reference-aware boost protection during playback; see [Reference-aware AGC gate](#reference-aware-agc-gate). |
 | `vad` | no | `true` | Speex voice activity detection on the processed channel. |
 | `vad_threshold` | no | `35` | Speech-start probability in percent (`20`–`90`). The speech-continue threshold stays at Speex's 20 %. |
 | `echo_suppress_db` | no | `40` | Residual-echo suppression (dB) applied by the preprocessor during far-end-only audio (`5`–`60`). |
@@ -52,6 +54,40 @@ and change one setting at a time.
 | `min_rms` | `120` | Minimum input RMS accepted by the localizer. |
 | `min_correlation_percent` | `50` | Minimum normalized positive correlation for a valid delay. |
 | `min_peak_dominance_percent` | `5` | Required margin over the best non-adjacent correlation peak. Invalid, weak, or ambiguous peaks retain the previous stable direction rather than steering on noise. |
+
+### Reference-aware AGC gate
+
+`agc.gate` limits AGC boost during playback without ever muting or deleting
+audio. With no active reference, AGC runs normally — even for quiet speech.
+While the reference is active, only audio that sustains pre-AGC RMS above
+`open_rms` keeps normal boost; ineligible audio loses boost and stops updating
+the AGC loudness estimate. The gate controls boost only: residual echo can
+still pass at unity gain, and the AEC keeps adapting throughout.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Enable the gate. Requires `agc.enabled`. |
+| `reference_open_rms` | `200` | Reference RMS at/above this marks playback active immediately. Keep above the measured idle/comfort-noise floor of the reference slot. |
+| `reference_close_rms` | `100` | While active, the reference must stay below this for `tail_ms` to end protection. Between close and open the previous state persists. Must stay below `reference_open_rms`. |
+| `open_rms` | `64` | During playback, pre-AGC RMS at/above this for `open_delay_ms` permits boost. This is not speech recognition. |
+| `close_rms` | `32` | Once eligible, RMS below this for `hold_ms` withdraws eligibility. Between close and open, eligibility persists. Must stay below `open_rms`. |
+| `open_delay_ms` | `32` | Continuous above-`open_rms` confirmation time before boost is permitted. `0` allows the first qualifying frame; no audio is discarded while waiting. |
+| `hold_ms` | `250` | Eligibility survives below-`close_rms` gaps this long. `0` closes eligibility on the first below-close frame. |
+| `tail_ms` | `250` | Continuous below-`reference_close_rms` time before returning to normal AGC. Covers echo tails, word gaps, and brief underruns. Expiry also re-arms the startup guard. `0` releases on the first quiet reference frame. |
+| `release_ms` | `150` | After eligibility closes during playback, existing boost fades toward unity over this time; existing attenuation is preserved. `0` removes boost immediately. |
+| `startup_guard_ms` | `200` | On reference activation, immediately cap gain at unity and block eligibility for this interval while the AEC keeps adapting; a fresh `open_delay_ms` confirmation is then required. Re-arms only after `tail_ms` of quiet reference — not on brief gaps or underruns. `0` disables. |
+
+All RMS thresholds are linear int16 PCM counts, **not** dB: speech levels are
+windowed RMS of the suppressed, pre-AGC signal (what `AGC_GATE` reports as
+`pre_agc_rms`), and reference levels are time-domain RMS of the AEC reference.
+Validation requires `0 < close < open <= 32768` for both threshold pairs, and
+the gate cannot be enabled while `agc.enabled` is false. Durations are
+milliseconds (`0`–`60000`), rounded up to audio-frame boundaries (16 ms at the
+default `frame_size`).
+
+With `telemetry: true`, the once-second `AGC_GATE` log line reports reference
+activity, boost eligibility, `startup_guard` state, and pre-AGC RMS. Its
+snapshots can miss a short guard interval.
 
 ### Microphone child
 
@@ -89,6 +125,10 @@ after the canceller converges.
 | Small rooms, direct speaker-to-microphone path | `1024` | ~64 ms |
 | Typical indoor echo tail (default) | `2048` | ~128 ms |
 | Large or reflective rooms, long playback-path latency | `4096` | ~256 ms |
+
+The complete Waveshare examples deliberately use `1024`, below the component
+default, to retain headroom for beamforming, display updates, wake-word
+processing, networking, meters, and profiling.
 
 Longer filters cost CPU and memory; the canceller state prefers internal RAM
 and falls back to PSRAM automatically. Validate any increase against the DSP
@@ -170,16 +210,18 @@ aec_speexdsp:
   resampler: true
 ```
 
-The component measures the sustained rate at which the host's PCM is accepted
-and gently resamples it to the satellite's fixed 16 kHz TDM clock. Correction is
-automatic: there is no rate or ratio to configure. The estimator uses
-multi-second windows, limits its target to 15–17 kHz, and changes the active
-rate one hertz at a time to avoid abrupt pitch or timing changes. Its last
-learned rate is reused at the beginning of the next playback stream.
+The component measures the rate at which completed frames are written to the
+I2S peripheral — the satellite's real playback clock — and gently resamples
+the host stream to match it. Correction is automatic: there is no rate or
+ratio to configure. The measured rate is clamped to 15–17 kHz, and the active
+correction moves toward it one hertz at a time to avoid abrupt pitch or timing
+changes. Its last learned rate is reused at the beginning of the next playback
+stream. Network delivery is bursty, and its throughput is deliberately not
+treated as a sample rate: short-term delivery variation is absorbed by the
+playback buffer rather than by changing voice pitch.
 
 This option is for small clock and delivery-rate differences, not source-format
 conversion. The speaker input must remain signed 16-bit, nominally 16 kHz PCM.
 See [How It Works]({{ '/architecture/' | relative_url }}#playback-automatic-rate-matching-and-reference)
 for the control flow and [Testing & Tuning]({{ '/tuning/' | relative_url }}#automatic-rate-matching)
 for validation.
-

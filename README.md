@@ -23,7 +23,8 @@ FPU, with no closed-source binaries.
   microphone stream, with filter lengths up to a full second of echo path on
   `aec_speexdsp`.
 - **Cleaner recognition audio** — noise suppression, optional automatic gain
-  control, and optional two-microphone beamforming.
+  control (with an optional reference-aware gate that avoids amplifying
+  playback), and optional two-microphone beamforming.
 - **Reliable wake-word hand-off** — a rolling pre-buffer preserves the start of
   the utterance while control passes from wake-word detection to the voice
   assistant.

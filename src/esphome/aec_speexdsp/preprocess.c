@@ -253,6 +253,13 @@ struct SpeexPreprocessState_ {
    float *loudness_weight;   /**< Perceptual loudness curve */
    float  loudness;          /**< Loudness estimate */
    float  agc_gain;          /**< Current AGC gain */
+   float diagnostic_frame_probability, diagnostic_echo_suppress;
+   int pre_agc_meter;
+   float pre_agc_rms;
+   SpeexAgcGateConfig agc_gate;
+   SpeexAgcGateState agc_gate_state;
+   float reference_rms, reference_quiet_ms, gate_above_ms, gate_below_ms, gate_release_ms;
+   float gate_startup_remaining_ms;
    float  max_gain;          /**< Maximum gain allowed */
    float  max_increase_step; /**< Maximum increase in gain from one frame to another */
    float  max_decrease_step; /**< Maximum decrease in gain from one frame to another */
@@ -595,6 +602,72 @@ static void speex_compute_agc(SpeexPreprocessState *st, spx_word16_t Pframe, spx
    float loudness=1.f;
    float rate;
 
+   if (st->agc_gate.enabled) {
+      const SpeexAgcGateConfig *g = &st->agc_gate;
+      SpeexAgcGateState *s = &st->agc_gate_state;
+      const float dt = 1000.f*st->frame_size/st->sampling_rate;
+      const int was_active = s->reference_active;
+      s->startup_guard = 0;
+      s->rms = st->pre_agc_rms;
+      if (st->reference_rms >= g->reference_open_rms) {
+         s->reference_active = 1;
+         st->reference_quiet_ms = 0;
+      } else if (s->reference_active) {
+         st->reference_quiet_ms = st->reference_rms < g->reference_close_rms
+             ? st->reference_quiet_ms + dt : 0;
+         if (st->reference_rms < g->reference_close_rms && st->reference_quiet_ms >= g->tail_ms)
+            s->reference_active = 0;
+      }
+      if (!s->reference_active) {
+         // No playback: ordinary AGC, including quiet near-end speech.
+         s->open = 1;
+         st->gate_above_ms = st->gate_below_ms = 0;
+         st->gate_startup_remaining_ms = 0;
+      } else {
+         if (!was_active) {
+            s->open = 0;
+            st->gate_above_ms = st->gate_below_ms = 0;
+            st->gate_release_ms = g->release_ms;
+            st->gate_startup_remaining_ms = g->startup_guard_ms;
+         }
+         if (st->gate_startup_remaining_ms > 0) {
+            // Protect the entire onset frame; preserve existing attenuation.
+            // Confirmation starts afresh after the guard, not during it.
+            s->startup_guard = 1;
+            s->open = 0;
+            st->gate_above_ms = st->gate_below_ms = 0;
+            st->agc_gain = MIN32(st->agc_gain, 1.f);
+            st->gate_startup_remaining_ms = MAX32(0.f, st->gate_startup_remaining_ms-dt);
+            for (i=0;i<2*N;i++) ft[i] *= st->agc_gain;
+            return;
+         }
+         if (!s->open) {
+            st->gate_above_ms = s->rms >= g->open_rms ? st->gate_above_ms + dt : 0;
+            if (s->rms >= g->open_rms && st->gate_above_ms >= g->open_ms) {
+               s->open = 1;
+               st->gate_below_ms = 0;
+            }
+         } else {
+            st->gate_below_ms = s->rms < g->close_rms ? st->gate_below_ms + dt : 0;
+            if (s->rms < g->close_rms && st->gate_below_ms >= g->hold_ms) {
+               s->open = 0;
+               st->gate_above_ms = 0;
+               st->gate_release_ms = g->release_ms;
+            }
+         }
+         if (!s->open) {
+            // Remove boost smoothly, preserve attenuation and never mute audio.
+            if (st->agc_gain > 1.f) {
+               if (st->gate_release_ms <= dt) st->agc_gain = 1.f;
+               else st->agc_gain += (1.f-st->agc_gain)*dt/st->gate_release_ms;
+            }
+            st->gate_release_ms = MAX32(0.f, st->gate_release_ms-dt);
+            for (i=0;i<2*N;i++) ft[i] *= st->agc_gain;
+            return; // Do not learn a loudness target from residual echo.
+         }
+      }
+   }
+
    for (i=2;i<N;i++)
    {
       loudness += 2.f*N*st->ps[i]* st->loudness_weight[i];
@@ -866,6 +939,10 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
    Pframe = QCONST16(.1f,15)+MULT16_16_Q15(QCONST16(.899f,15),qcurve(DIV32_16(Zframe,st->nbands)));
 
    effective_echo_suppress = EXTRACT16(PSHR32(ADD32(MULT16_16(SUB16(Q15_ONE,Pframe), st->echo_suppress), MULT16_16(Pframe, st->echo_suppress_active)),15));
+#ifndef FIXED_POINT
+   st->diagnostic_frame_probability = Pframe;
+   st->diagnostic_echo_suppress = effective_echo_suppress;
+#endif
 
    compute_gain_floor(st->noise_suppress, effective_echo_suppress, st->noise+N, st->echo_noise+N, st->gain_floor+N, M);
 
@@ -1020,6 +1097,11 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
 
    /*FIXME: This *will* not work for fixed-point */
 #ifndef FIXED_POINT
+   if (st->pre_agc_meter || (st->agc_enabled && st->agc_gate.enabled)) {
+      float energy = st->ft[0]*st->ft[0] + st->ft[2*N-1]*st->ft[2*N-1];
+      for (i=1;i<2*N-1;i++) energy += 2.f*st->ft[i]*st->ft[i];
+      st->pre_agc_rms = sqrtf(energy);
+   }
    if (st->agc_enabled)
       speex_compute_agc(st, Pframe, st->ft);
 #endif
@@ -1145,6 +1227,51 @@ EXPORT int speex_preprocess_ctl(SpeexPreprocessState *state, int request, void *
       (*(spx_int32_t*)ptr) = st->denoise_enabled;
       break;
 #ifndef FIXED_POINT
+   case SPEEX_PREPROCESS_GET_RESIDUAL_DIAGNOSTICS:
+   {
+      SpeexPreprocessResidualDiagnostics *d = (SpeexPreprocessResidualDiagnostics *)ptr;
+      memset(d, 0, sizeof(*d));
+      for (i=0;i<st->ps_size;i++) {
+         d->input_power += st->ps[i];
+         if (st->echo_state) d->residual_power += st->residual_echo[i];
+         d->echo_power += st->echo_noise[i];
+         d->noise_power += st->noise[i];
+         d->suppressed_power += st->ps[i]*st->gain2[i]*st->gain2[i];
+      }
+      d->frame_probability = st->diagnostic_frame_probability;
+      d->effective_echo_suppress_db = st->diagnostic_echo_suppress;
+      return 0;
+   }
+   case SPEEX_PREPROCESS_SET_PRE_AGC_METER:
+      st->pre_agc_meter = *(int *)ptr;
+      return 0;
+   case SPEEX_PREPROCESS_SET_AGC_GATE:
+   {
+      const SpeexAgcGateConfig *g = (const SpeexAgcGateConfig *)ptr;
+      if (!isfinite(g->open_rms) || !isfinite(g->close_rms) ||
+          !isfinite(g->reference_open_rms) || !isfinite(g->reference_close_rms) ||
+          g->close_rms <= 0 || g->open_rms <= g->close_rms || g->open_rms > 32768 ||
+          g->reference_close_rms <= 0 || g->reference_open_rms <= g->reference_close_rms ||
+          g->reference_open_rms > 32768 || g->open_ms < 0 || g->open_ms > 60000 ||
+          g->hold_ms < 0 || g->hold_ms > 60000 || g->tail_ms < 0 || g->tail_ms > 60000 ||
+          g->release_ms < 0 || g->release_ms > 60000 ||
+          g->startup_guard_ms < 0 || g->startup_guard_ms > 60000) return -1;
+      st->agc_gate = *g;
+      memset(&st->agc_gate_state, 0, sizeof(st->agc_gate_state));
+      st->reference_quiet_ms = st->gate_above_ms = st->gate_below_ms = st->gate_release_ms = 0;
+      st->gate_startup_remaining_ms = 0;
+      return 0;
+   }
+   case SPEEX_PREPROCESS_SET_REFERENCE_RMS:
+      if (!isfinite(*(float *)ptr) || *(float *)ptr < 0) return -1;
+      st->reference_rms = *(float *)ptr;
+      return 0;
+   case SPEEX_PREPROCESS_GET_AGC_GATE_STATE:
+      *(SpeexAgcGateState *)ptr = st->agc_gate_state;
+      return 0;
+   case SPEEX_PREPROCESS_GET_PRE_AGC_RMS:
+      *(float *)ptr = st->pre_agc_rms;
+      return 0;
    case SPEEX_PREPROCESS_SET_AGC:
       st->agc_enabled = (*(spx_int32_t*)ptr);
       break;

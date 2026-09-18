@@ -1308,23 +1308,36 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
       which made residual-echo suppression invalid whenever C > 1. */
    for (i=0;i<st->frame_size;i++)
       st->last_y[i] = st->last_y[st->frame_size+i];
-   if (st->adapted)
    {
-      /* If the filter is adapted, take the filtered echo */
+      /* Use the evolving removed-echo estimate during adaptation too. Do not
+         leave the post-filter blind until the global adapted flag is set. */
       for (i=0;i<st->frame_size;i++)
       {
          spx_int32_t echo_sum = 0;
          for (chan=0;chan<C;chan++)
             echo_sum += in[i*C+chan]-out[i*C+chan];
+#ifdef FIXED_POINT
          st->last_y[st->frame_size+i] = WORD2INT(echo_sum/C);
+#else
+         st->last_y[st->frame_size+i] = (float)echo_sum/C;
+#endif
       }
-   } else {
-      /* If filter isn't adapted yet, all we can do is take the far end signal directly */
-      /* moved earlier: for (i=0;i<N;i++)
-      st->last_y[i] = st->x[i];*/
    }
 
 }
+
+void speex_echo_set_beamformed_estimate(SpeexEchoState *st, const spx_int16_t *raw,
+                                      const spx_int16_t *cleaned)
+{
+   int i;
+   for (i=0;i<st->frame_size;i++)
+#ifdef FIXED_POINT
+      st->last_y[st->frame_size+i] = WORD2INT((spx_int32_t)raw[i]-cleaned[i]);
+#else
+      st->last_y[st->frame_size+i] = (float)raw[i]-cleaned[i];
+#endif
+}
+
 
 /* Compute spectrum of estimated echo for use in an echo post-filter */
 void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, int len)
@@ -1335,13 +1348,15 @@ void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, in
 
    N = st->window_size;
 
+   if (len <= 0)
+      return;
+
    /* Apply hanning window (should pre-compute it)*/
    for (i=0;i<N;i++)
       st->y[i] = MULT16_16_Q15(st->window[i],st->last_y[i]);
 
    /* Compute power spectrum of the echo */
    spx_fft(st->fft_table, st->y, st->Y);
-   power_spectrum(st->Y, residual_echo, N);
 
 #ifdef FIXED_POINT
    if (st->leak_estimate > 16383)
@@ -1355,8 +1370,19 @@ void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, in
       leak2 = 2*st->leak_estimate;
 #endif
    /* Estimate residual echo */
-   for (i=0;i<=st->frame_size;i++)
-      residual_echo[i] = (spx_int32_t)MULT16_32_Q15(leak2,residual_echo[i]);
+   /* Respect the caller's bin count (preprocess excludes Nyquist). Keep
+      fractional power in floating-point builds: truncation erased weak echo
+      bins and biased the post-filter toward speech. */
+   for (i=0;i<len && i<=st->frame_size;i++) {
+      spx_word32_t power;
+      if (i==0)
+         power = MULT16_16(st->Y[0],st->Y[0]);
+      else if (i==st->frame_size)
+         power = MULT16_16(st->Y[N-1],st->Y[N-1]);
+      else
+         power = MULT16_16(st->Y[2*i-1],st->Y[2*i-1]) + MULT16_16(st->Y[2*i],st->Y[2*i]);
+      residual_echo[i] = MULT16_32_Q15(leak2,power);
+   }
 
 }
 
@@ -1364,6 +1390,22 @@ EXPORT int speex_echo_ctl(SpeexEchoState *st, int request, void *ptr)
 {
    switch(request)
    {
+      case SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS:
+      {
+         SpeexEchoResidualDiagnostics *d = (SpeexEchoResidualDiagnostics *)ptr;
+         double energy = 0;
+         int i;
+         for (i=0;i<st->window_size;i++)
+            energy += (double)st->last_y[i]*st->last_y[i];
+         d->removed_rms = sqrt(energy/st->window_size);
+         d->adapted = st->adapted;
+#ifdef FIXED_POINT
+         d->leak = st->leak_estimate/32768.f;
+#else
+         d->leak = st->leak_estimate;
+#endif
+         return 0;
+      }
 
       case SPEEX_ECHO_GET_FRAME_SIZE:
          (*(int*)ptr) = st->frame_size;

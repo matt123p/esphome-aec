@@ -50,9 +50,6 @@ static const uint32_t PLAYBACK_RATE_MAX = SAMPLE_RATE + 1000;
 static const uint32_t PLAYBACK_RATE_ADJUST_STEP = 1;
 static const uint32_t PLAYBACK_RATE_MEASURE_MIN_US = 8000;
 static const uint32_t PLAYBACK_RATE_LOG_INTERVAL_MS = 1000;
-static const uint32_t INPUT_RATE_ESTIMATE_MIN_WINDOW_MS = 3000;
-static const uint32_t INPUT_RATE_IDLE_RESET_MS = 1000;
-static const size_t INPUT_RATE_ESTIMATE_MIN_FRAMES = SAMPLE_RATE * 2;
 #endif
 
 void AECSpeexDspComponent::set_pins(int mclk, int bclk, int lrclk, int din, int dout) {
@@ -82,7 +79,6 @@ void AECSpeexDspComponent::setup() {
   this->playback_buffer_ = std::shared_ptr<ring_buffer::RingBuffer>(std::move(buffer));
 #ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
   this->playback_rate_.store(PLAYBACK_RATE);
-  this->input_playback_rate_.store(PLAYBACK_RATE);
   initialise_resampler();
 #endif
 
@@ -150,12 +146,16 @@ void AECSpeexDspComponent::setup() {
     return;
   }
 
-  // ESPHome creates loopTask on CPU 1. Keep the canceller on CPU 0 so a long
-  // echo filter cannot prevent loopTask from feeding its watchdog or
-  // forwarding processed microphone audio to the API. Playback mostly blocks
-  // in its I2S write and remains on CPU 1, separate from the canceller.
+  // Dual-core targets keep playback beside ESPHome's CPU-1 loopTask while the
+  // canceller runs on CPU 0. ESP32-S2 is single-core, so CPU 1 does not exist;
+  // run both tasks on CPU 0 there. Playback normally blocks in its I2S write.
+#ifdef CONFIG_FREERTOS_UNICORE
+  constexpr BaseType_t playback_core = 0;
+#else
+  constexpr BaseType_t playback_core = 1;
+#endif
   if (xTaskCreatePinnedToCore(AECSpeexDspComponent::playback_task, "speexdsp_playback", 4096, this, 20,
-                              &this->playback_task_handle_, 1) != pdPASS) {
+                              &this->playback_task_handle_, playback_core) != pdPASS) {
     ESP_LOGE(TAG, "Could not start playback task");
     this->mark_failed();
     return;
@@ -351,11 +351,12 @@ bool AECSpeexDspComponent::start_dsp_() {
   }
   const uint8_t channels = this->processed_channels_();
 
-  const uint8_t echo_states = this->beamforming_enabled_ ? 1 : channels;
+  const bool shared_aec = this->beamforming_enabled_;
+  const uint8_t echo_states = shared_aec ? 1 : channels;
   for (uint8_t c = 0; c < echo_states; c++) {
     // Speex's multichannel state shares the reference FFT, reference history,
     // power estimate, and adaptation bookkeeping across all microphones.
-    this->echo_state_[c] = this->beamforming_enabled_
+    this->echo_state_[c] = shared_aec
                                ? speex_echo_state_init_mc(frame, filter, channels, 1)
                                : speex_echo_state_init(frame, filter);
     if (this->echo_state_[c] == nullptr) {
@@ -365,6 +366,10 @@ bool AECSpeexDspComponent::start_dsp_() {
     }
     int rate = SAMPLE_RATE;
     speex_echo_ctl(this->echo_state_[c], SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
+
+    // Beamforming always has one final preprocessor, regardless of AEC topology.
+    if (this->beamforming_enabled_ && c != 0)
+      continue;
 
     this->preprocess_state_[c] = speex_preprocess_state_init(frame, SAMPLE_RATE);
     if (this->preprocess_state_[c] == nullptr) {
@@ -379,10 +384,12 @@ bool AECSpeexDspComponent::start_dsp_() {
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &noise_db);
 
     int agc = this->agc_enabled_ ? 1 : 0;
+    speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC_GATE, &this->agc_gate_config_);
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC, &agc);
     if (this->agc_enabled_) {
       float level = this->agc_target_level_ * 32768.0f;
       speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC_LEVEL, &level);
+      speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC_MAX_GAIN, &this->agc_max_gain_db_);
     }
 
     // Link the echo state so the preprocessor applies residual echo
@@ -406,7 +413,7 @@ bool AECSpeexDspComponent::start_dsp_() {
            "residual-echo=-%udB/-%udB AGC=%s(target %.2f) VAD=%s(start %u%%)",
            frame, filter, static_cast<unsigned>(filter * 1000 / SAMPLE_RATE), channels,
            YESNO(this->beamforming_enabled_),
-           this->beamforming_enabled_ ? "shared-reference multichannel MDF" : "independent",
+           shared_aec ? "shared-reference multichannel MDF" : "independent mono MDF",
            YESNO(this->noise_suppression_enabled_), this->noise_suppression_level_db_, this->echo_suppress_db_,
            this->echo_suppress_active_db_, YESNO(this->agc_enabled_), this->agc_target_level_,
            YESNO(this->vad_enabled_), this->vad_threshold_);
@@ -486,6 +493,25 @@ void AECSpeexDspComponent::run_audio_task_() {
   uint32_t profile_beamforming_calls_previous = this->beamformer_.get_beamforming_calls();
 #endif
 #ifdef USE_AEC_SPEEXDSP_TELEMETRY
+  // Fixed one-second windows include playback tails and pauses. These are
+  // stage levels, not delay-aligned ERLE or proof of near-end speech.
+  uint32_t stage_last_log = millis();
+  uint32_t stage_frames = 0;
+  uint32_t stage_reference_frames = 0;
+  uint64_t stage_raw[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  uint64_t stage_aec[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  uint64_t stage_pre[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  uint64_t stage_post[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
+  uint64_t stage_reference = 0, stage_output = 0;
+  uint32_t stage_output_peak = 0, stage_output_clips = 0;
+  auto stage_energy = [frame_size](const int16_t *samples, size_t stride) -> uint64_t {
+    uint64_t energy = 0;
+    for (size_t n = 0; n < frame_size; ++n) {
+      const int32_t sample = samples[n * stride];
+      energy += static_cast<uint64_t>(sample * sample);
+    }
+    return energy;
+  };
   uint64_t effect_samples = 0;
   uint64_t effect_ref_energy = 0;
   uint64_t effect_raw_energy[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
@@ -567,6 +593,12 @@ void AECSpeexDspComponent::run_audio_task_() {
 #endif
 
     bool speech_detected = false;
+    if (this->agc_enabled_ && this->agc_gate_config_.enabled) {
+      float reference_rms = this->reference_rms_.load();
+      for (uint8_t c = 0; c < (this->beamforming_enabled_ ? 1 : channels); ++c)
+        if (this->preprocess_state_[c] != nullptr)
+          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_REFERENCE_RMS, &reference_rms);
+    }
     const int8_t diagnostic_raw_slot = this->diagnostic_raw_slot_.load();
     if (diagnostic_raw_slot >= 0) {
       // Deliberate DSP bypass: publish the raw slot as mono for slot mapping.
@@ -582,6 +614,7 @@ void AECSpeexDspComponent::run_audio_task_() {
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         uint32_t profile_start = esp_cpu_get_cycle_count();
 #endif
+        const size_t beam_stride = channels;
         speex_echo_cancellation(this->echo_state_[0], mic, ref, processed);
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_echo_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
@@ -589,13 +622,30 @@ void AECSpeexDspComponent::run_audio_task_() {
         const int16_t *beam_inputs[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
         for (uint8_t c = 0; c < channels; c++)
           beam_inputs[c] = processed + c;
-        this->beamformer_.process(beam_inputs, frame_size, out, channels);
+#ifdef USE_AEC_SPEEXDSP_TELEMETRY
+        for (uint8_t c = 0; c < channels; ++c)
+          stage_aec[c] += stage_energy(beam_inputs[c], beam_stride);
+#endif
+        this->beamformer_.process(beam_inputs, frame_size, out, beam_stride);
+        // Apply exactly the same steering to raw microphones. Reuse processed
+        // scratch only after the cleaned beamformer has saved its history.
+        // The difference is the removed echo in the published beam's domain.
+        for (uint8_t c = 0; c < channels; ++c)
+          beam_inputs[c] = mic + c;
+        this->raw_beamformer_.process_with_steering(this->beamformer_, beam_inputs, frame_size, processed, beam_stride);
+        speex_echo_set_beamformed_estimate(this->echo_state_[0], processed, out);
+#ifdef USE_AEC_SPEEXDSP_TELEMETRY
+        stage_pre[0] += stage_energy(out, 1);
+#endif
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_start = esp_cpu_get_cycle_count();
 #endif
         speech_detected = speex_preprocess_run(this->preprocess_state_[0], out) != 0;
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_preprocess_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
+#endif
+#ifdef USE_AEC_SPEEXDSP_TELEMETRY
+        stage_post[0] += stage_energy(out, 1);
 #endif
       } else {
         for (uint8_t c = 0; c < channels; c++) {
@@ -607,6 +657,13 @@ void AECSpeexDspComponent::run_audio_task_() {
           speex_echo_cancellation(this->echo_state_[c], channel_mic, ref, channel_out);
 #ifdef USE_AEC_SPEEXDSP_PROFILE
           profile_echo_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
+#endif
+#ifdef USE_AEC_SPEEXDSP_TELEMETRY
+          const uint64_t energy = stage_energy(channel_out, 1);
+          stage_aec[c] += energy;
+          stage_pre[c] += energy;
+#endif
+#ifdef USE_AEC_SPEEXDSP_PROFILE
           profile_start = esp_cpu_get_cycle_count();
 #endif
           const int detected = speex_preprocess_run(this->preprocess_state_[c], channel_out);
@@ -614,6 +671,9 @@ void AECSpeexDspComponent::run_audio_task_() {
             speech_detected = detected != 0;
 #ifdef USE_AEC_SPEEXDSP_PROFILE
           profile_preprocess_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
+#endif
+#ifdef USE_AEC_SPEEXDSP_TELEMETRY
+          stage_post[c] += stage_energy(channel_out, 1);
 #endif
         }
         if (channels == 2) {
@@ -635,6 +695,70 @@ void AECSpeexDspComponent::run_audio_task_() {
     }
 
 #ifdef USE_AEC_SPEEXDSP_TELEMETRY
+    if (diagnostic_raw_slot < 0 && this->echo_state_[0] != nullptr && this->preprocess_state_[0] != nullptr) {
+      ++stage_frames;
+      stage_reference_frames += this->reference_rms_.load() > 500.0f;
+      stage_reference += reference_sum_sq;
+      stage_output += stage_energy(out, 1);
+      for (uint8_t c = 0; c < channels; ++c)
+        stage_raw[c] += stage_energy(raw + this->processed_slots_[c], this->tdm_slots_);
+      for (size_t n = 0; n < frame_size; ++n) {
+        const uint32_t magnitude = std::abs(static_cast<int32_t>(out[n]));
+        stage_output_peak = std::max(stage_output_peak, magnitude);
+        stage_output_clips += magnitude >= 32767;
+      }
+    }
+    const uint32_t stage_now = millis();
+    if (stage_now - stage_last_log >= 1000 && stage_frames > 0) {
+      const double samples = static_cast<double>(stage_frames) * frame_size;
+      auto rms = [samples](uint64_t energy) { return std::sqrt(static_cast<double>(energy) / samples); };
+      ESP_LOGI(TAG, "AEC_STAGES window_ms=%" PRIu32 " frames=%" PRIu32
+                   " ref_active=%" PRIu32 " ref_rms=%.1f final_rms=%.1f peak=%" PRIu32
+                   " clips=%" PRIu32 " beam=%s",
+               stage_now - stage_last_log, stage_frames, stage_reference_frames, rms(stage_reference),
+               rms(stage_output), stage_output_peak, stage_output_clips, YESNO(this->beamforming_enabled_));
+      for (uint8_t c = 0; c < channels; ++c) {
+        ESP_LOGI(TAG, "AEC_STAGE_MIC channel=%u slot=%u raw_rms=%.1f post_aec_rms=%.1f",
+                 c, this->processed_slots_[c], rms(stage_raw[c]), rms(stage_aec[c]));
+      }
+      const uint8_t pre_channels = this->beamforming_enabled_ ? 1 : channels;
+      for (uint8_t c = 0; c < pre_channels; ++c) {
+        spx_int32_t gain_db = 0, probability = 0;
+        if (this->agc_enabled_ && this->agc_gate_config_.enabled) {
+          SpeexAgcGateState gate{};
+          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_GET_AGC_GATE_STATE, &gate);
+          ESP_LOGI(TAG, "AGC_GATE last_frame channel=%u reference_active=%s eligible=%s startup_guard=%s pre_agc_rms=%.1f",
+                   c, YESNO(gate.reference_active), YESNO(gate.open), YESNO(gate.startup_guard), gate.rms);
+        }
+        if (this->preprocess_state_[c] != nullptr) {
+          if (this->agc_enabled_)
+            speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_GET_AGC_GAIN, &gain_db);
+          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_GET_PROB, &probability);
+        }
+        ESP_LOGI(TAG, "AEC_STAGE_PRE channel=%u input_rms=%.1f output_rms=%.1f agc=%s"
+                     " agc_gain_db_last=%ld speech_probability_last=%ld%%",
+                 c, rms(stage_pre[c]), rms(stage_post[c]), YESNO(this->agc_enabled_),
+                 static_cast<long>(gain_db), static_cast<long>(probability));
+        SpeexEchoResidualDiagnostics echo_diag{};
+        SpeexPreprocessResidualDiagnostics pre_diag{};
+        speex_echo_ctl(this->echo_state_[c], SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS, &echo_diag);
+        speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_GET_RESIDUAL_DIAGNOSTICS, &pre_diag);
+        ESP_LOGI(TAG, "AEC_RESIDUAL last_frame channel=%u adapted=%s leak=%.4f removed_rms=%.1f"
+                     " input_ps=%.3g residual_ps=%.3g echo_ps=%.3g noise_ps=%.3g suppressed_ps=%.3g"
+                     " Pframe=%.3f echo_floor_db=%.1f",
+                 c, YESNO(echo_diag.adapted), echo_diag.leak, echo_diag.removed_rms,
+                 pre_diag.input_power, pre_diag.residual_power, pre_diag.echo_power, pre_diag.noise_power,
+                 pre_diag.suppressed_power, pre_diag.frame_probability, pre_diag.effective_echo_suppress_db);
+      }
+      stage_last_log = stage_now;
+      stage_frames = stage_reference_frames = 0;
+      stage_reference = stage_output = 0;
+      stage_output_peak = stage_output_clips = 0;
+      std::fill(std::begin(stage_raw), std::end(stage_raw), 0);
+      std::fill(std::begin(stage_aec), std::end(stage_aec), 0);
+      std::fill(std::begin(stage_pre), std::end(stage_pre), 0);
+      std::fill(std::begin(stage_post), std::end(stage_post), 0);
+    }
     if (this->reference_rms_.load() > 500.0f && diagnostic_raw_slot < 0) {
       for (size_t frame = 0; frame < frame_size; frame++) {
         const int32_t ref_sample = ref[frame];
@@ -740,7 +864,7 @@ void AECSpeexDspComponent::run_audio_task_() {
 
     // CPU load vs real time. The task is audio-driven, so busy/budget is this
     // component's share of one core; a value >= 100% means the canceller
-    // cannot keep up with 16 kHz (frames get dropped, visible as rx_errors).
+    // cannot keep up with 16 kHz and a transport overrun becomes likely.
     load_frames++;
     load_processing_us += processing_us;
     if (processing_us > load_peak_us)
@@ -822,10 +946,9 @@ void AECSpeexDspComponent::run_audio_task_() {
       last_load_log = millis();
     }
 
-    // Over-budget frame: the DSP did not finish inside the frame period, so
-    // this task would otherwise monopolise its core (starving WiFi/ESP-Hosted
-    // and stalling the main loop until the watchdog fires). Yield briefly and
-    // let the I2S DMA overflow audibly instead — rx_errors_ records it.
+    // Over-budget frame: yield briefly so system work can run instead of
+    // waiting for the watchdog. Diagnostics report the processing peak; a
+    // subsequent transport overrun may also appear as an RX error.
     if (processing_us > frame_budget_us)
       vTaskDelay(1);
   }
@@ -1066,9 +1189,6 @@ size_t AECSpeexDspComponent::play(const uint8_t *data, size_t length, TickType_t
     this->play_zero_writes_.fetch_add(1);
   this->play_source_bytes_.fetch_add(accepted_bytes);
   this->play_enqueued_bytes_.fetch_add(enqueued_bytes);
-  if (accepted_bytes > 0) {
-    this->record_playback_input_rate_(accepted_bytes, channels);
-  }
   return accepted_bytes;
 #else
   const size_t written = this->playback_buffer_->write_without_replacement(data, length, ticks_to_wait);
@@ -1089,46 +1209,6 @@ void AECSpeexDspComponent::initialise_resampler() {
   last_samples_[1] = 0;
 }
 
-void AECSpeexDspComponent::record_playback_input_rate_(size_t accepted_bytes, uint8_t channels) {
-  if (accepted_bytes == 0)
-    return;
-  if (channels == 0)
-    channels = 1;
-
-  const uint32_t now = millis();
-  if (this->input_rate_window_start_ms_ == 0 || this->input_rate_channels_ != channels ||
-      now - this->input_rate_last_ms_ > INPUT_RATE_IDLE_RESET_MS) {
-    // Start a fresh observation window after idle, but keep any locked rate so
-    // the next playback can use it immediately while gathering a new estimate.
-    this->input_rate_window_start_ms_ = now;
-    this->input_rate_window_bytes_ = 0;
-    this->input_rate_channels_ = channels;
-  }
-
-  this->input_rate_last_ms_ = now;
-  this->input_rate_window_bytes_ += accepted_bytes;
-
-  const uint32_t elapsed_ms = now - this->input_rate_window_start_ms_;
-  const size_t bytes_per_frame = channels * sizeof(int16_t);
-  const size_t frames = this->input_rate_window_bytes_ / bytes_per_frame;
-  if (elapsed_ms < INPUT_RATE_ESTIMATE_MIN_WINDOW_MS || frames < INPUT_RATE_ESTIMATE_MIN_FRAMES)
-    return;
-
-  uint32_t source_rate =
-      static_cast<uint32_t>(((static_cast<uint64_t>(frames) * 1000ULL) + (elapsed_ms / 2)) / elapsed_ms);
-  source_rate = std::clamp<uint32_t>(source_rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
-  const uint32_t playback_rate = std::clamp<uint32_t>(
-      static_cast<uint32_t>(((static_cast<uint64_t>(SAMPLE_RATE) * SAMPLE_RATE) + (source_rate / 2)) / source_rate),
-      PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
-
-  this->input_source_rate_.store(source_rate);
-  this->input_playback_rate_.store(playback_rate);
-  this->input_rate_valid_.store(true);
-
-  this->input_rate_window_start_ms_ = now;
-  this->input_rate_window_bytes_ = 0;
-}
-
 void AECSpeexDspComponent::update_playback_rate_(uint32_t write_us, size_t frames) {
   const uint32_t expected_us = static_cast<uint32_t>((static_cast<uint64_t>(frames) * 1000000ULL) / SAMPLE_RATE);
   if (write_us < PLAYBACK_RATE_MEASURE_MIN_US)
@@ -1137,16 +1217,10 @@ void AECSpeexDspComponent::update_playback_rate_(uint32_t write_us, size_t frame
   uint32_t measured_rate =
       static_cast<uint32_t>(((static_cast<uint64_t>(frames) * 1000000ULL) + (write_us / 2)) / write_us);
   measured_rate = std::clamp<uint32_t>(measured_rate, PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX);
-  const bool input_rate_valid = this->input_rate_valid_.load();
-  const uint32_t input_source_rate = this->input_source_rate_.load();
-  const uint32_t input_playback_rate = this->input_playback_rate_.load();
-  // Restore of aec_audio 66da232 "Adapt rate to incoming rate": the offered
-  // stream rate (HA/Gemini: ~15.9-16.1 kHz observed) and the fixed I2S clock
-  // drift apart, slowly draining the ring into an underrun on long responses.
-  // Match consumption to the offered rate; the 3 s estimate window and the
-  // 1 Hz/step slew bound how fast bursty arrival can move the target. Watch
-  // "input=" in the log for pause-induced spikes toward 17 kHz.
-  const uint32_t target_rate = input_rate_valid ? input_playback_rate : measured_rate;
+  // Correct only the measured I2S playback rate. Network delivery is bursty:
+  // its throughput is not the PCM sample rate. The ring buffer/backpressure
+  // handles delivery variation independently, without changing voice pitch.
+  const uint32_t target_rate = measured_rate;
   uint32_t playback_rate = this->playback_rate_.load();
   const uint32_t previous_playback_rate = playback_rate;
 
@@ -1166,16 +1240,9 @@ void AECSpeexDspComponent::update_playback_rate_(uint32_t write_us, size_t frame
   const uint32_t now = millis();
   if (now - this->last_playback_rate_log_ >= PLAYBACK_RATE_LOG_INTERVAL_MS) {
     this->last_playback_rate_log_ = now;
-    if (input_rate_valid) {
-      ESP_LOGI(TAG,
-               "Playback rate adjust: write_us=%" PRIu32 " expected_us=%" PRIu32 " measured=%" PRIu32
-               " Hz input=%" PRIu32 " Hz target=%" PRIu32 " Hz rate=%" PRIu32 " Hz",
-               write_us, expected_us, measured_rate, input_source_rate, target_rate, playback_rate);
-    } else {
-      ESP_LOGI(TAG, "Playback rate adjust: write_us=%" PRIu32 " expected_us=%" PRIu32 " measured=%" PRIu32
-                    " Hz target=measured rate=%" PRIu32 " Hz",
-               write_us, expected_us, measured_rate, playback_rate);
-    }
+    ESP_LOGI(TAG, "Playback rate adjust: write_us=%" PRIu32 " expected_us=%" PRIu32 " measured=%" PRIu32
+                  " Hz target=measured rate=%" PRIu32 " Hz",
+             write_us, expected_us, measured_rate, playback_rate);
   }
 }
 
@@ -1247,12 +1314,6 @@ void AECSpeexDspComponent::clear_playback() {
   // them can interpolate the first sample of a new stream with the tail of
   // the previous stream.
   this->initialise_resampler();
-  // Do not clear input_rate_valid_/input_playback_rate_: once a source rate has
-  // been learned, keep using it for the next playback until a new window updates it.
-  this->input_rate_window_start_ms_ = 0;
-  this->input_rate_last_ms_ = 0;
-  this->input_rate_window_bytes_ = 0;
-  this->input_rate_channels_ = 0;
 #endif
   this->buffering_ = true;
 }

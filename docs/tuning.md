@@ -67,23 +67,23 @@ sustained difference is causing playback drift:
 2. Play continuous, nominally 16 kHz PCM for at least 30 seconds. Several
    minutes is better for exposing a small mismatch.
 3. Confirm the log initially reports `Playback resampler enabled` at 16000 Hz.
-4. Watch `Playback input rate` for the offered and accepted host rates.
-5. Watch `Playback rate adjust` for the measured TDM rate, estimated host input,
-   target, and gradually adjusted playback rate.
-6. Confirm playback remains continuous and that underrun, TX-error, and dropped
+4. Watch `Playback rate adjust` for the measured I2S rate and the gradually
+   adjusted playback rate. `Playback input rate` is informational only —
+   bursty offered/accepted throughput is normal and does not move the target.
+5. Confirm playback remains continuous and that underrun, TX-error, and dropped
    frame counters do not continually rise.
 
-The host estimate needs at least three seconds before it becomes active. A
-settled value slightly above or below 16 kHz is expected; it indicates that the
-component is adding or removing a small number of interpolated samples to keep
-the one-second playback buffer stable. The correction is retained for the next
-response and refined when new audio arrives.
+A settled playback rate slightly above or below 16 kHz is expected; it
+indicates that the component is adding or removing a small number of
+interpolated samples to keep the one-second playback buffer stable. The
+correction is retained for the next response and refined as new measurements
+arrive.
 
 Rate matching is not a cure for the host sending the wrong format, large network
 gaps, an overloaded device, or persistent I2S errors. Convert all input to
 signed 16-bit, nominally 16 kHz PCM before it reaches the speaker. If the
-estimated rate repeatedly reaches the 15 kHz or 17 kHz limit, investigate the
-source and transport rather than treating the limit as normal clock drift.
+playback rate repeatedly settles at the 15 kHz or 17 kHz clamp, measure the
+board's actual audio clocks rather than treating the limit as normal drift.
 
 ## 4. Prevent reference clipping
 
@@ -137,11 +137,22 @@ Tune in this order:
 3. `noise_suppression_level_db`;
 4. `echo_suppress_db` / `echo_suppress_active_db` — higher values remove more
    residual echo; lower `echo_suppress_active_db` preserves double-talk;
-5. `filter_length` — the main quality knob. Longer tails cancel longer rooms:
-   start at the `2048` default, try `4096` (~256 ms) in reflective rooms, and
-   go up to `16384` if the DSP budget allows. SpeexDSP's own adaptive delay
+5. `filter_length` — the main quality knob. The complete Waveshare examples
+   start at `1024` for workload headroom; `2048` is the component default. Try
+   longer tails only when measurements show they are needed and the DSP/memory
+   budget allows. SpeexDSP's own adaptive delay
    search means the reference delay only needs to be roughly right;
-6. `agc_target_level`, then optional meters and resampling.
+6. `agc.target_level`, then optional meters and resampling.
+
+With the AGC gate enabled, verify its decisions during playback: enable
+`telemetry: true` and watch the once-second `AGC_GATE` line. Quiet speech that
+cannot acquire boost during playback means `open_rms` is too high or
+`open_delay_ms`/`startup_guard_ms` too long for the material; residual echo
+that acquires boost means raise `open_rms`, `open_delay_ms`, or
+`startup_guard_ms`. Set `reference_open_rms` above the measured idle floor of
+the reference slot, and lengthen `tail_ms` if protection releases during
+quiet playback tails. Remember the gate controls boost only: it never mutes,
+and it cannot remove echo that passes at unity gain.
 
 Test at several playback volumes and distances. Include playback-only, speech-
 only, and simultaneous speech/playback cases, then test the real wake-word and

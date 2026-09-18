@@ -122,6 +122,19 @@ void speex_echo_playback(SpeexEchoState *st, const spx_int16_t *play);
  */
 void speex_echo_state_reset(SpeexEchoState *st);
 
+#define SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS 1002
+typedef struct {
+   int adapted;
+   float leak;
+   float removed_rms;
+} SpeexEchoResidualDiagnostics;
+
+/** Override this frame's echo estimate after cancellation, before preprocessing.
+ * Both mono buffers must use identical beamforming steering/history alignment.
+ * Does not advance history; cancellation already advanced it once this frame. */
+void speex_echo_set_beamformed_estimate(SpeexEchoState *st, const spx_int16_t *raw,
+                                      const spx_int16_t *cleaned);
+
 /** Used like the ioctl function to control the echo canceller parameters
  *
  * @param st Echo canceller state

@@ -73,7 +73,7 @@ aec_speexdsp:
   # audio_adc and the five I2S/TDM pins go here
   tdm_slots: 4
   frame_size: 256
-  filter_length: 2048
+  filter_length: 1024
   diagnostic_raw_slot: 0
   slot_logs: true
   diagnostics: true

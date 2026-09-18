@@ -38,7 +38,9 @@ component:
   builds for every ESP32 variant with an FPU (ESP32, S2, S3, P4).
 - **Full preprocessing chain.** SpeexDSP noise suppression, AGC, residual-echo
   suppression with separate double-talk handling, and VAD, plus an optional
-  post-AEC delay-and-sum beamformer for two-microphone boards.
+  post-AEC delay-and-sum beamformer for two-microphone boards. An optional
+  reference-aware AGC gate prevents playback from being amplified during
+  responses without muting anything.
 
 The component is an ESPHome wrapper and audio transport layer. It takes care
 of the full-duplex I2S/TDM hardware, prepares the captured channels for the

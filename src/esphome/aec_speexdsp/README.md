@@ -7,10 +7,12 @@ control (AGC) and voice activity detection (VAD) using the open-source
 [ESP32-SpeexDSP](https://github.com/rjsachse/ESP32-SpeexDSP).
 
 It is plain C built from the vendored SpeexDSP sources, so it compiles for
-every ESP32 variant (best with a hardware FPU: ESP32, S2, S3, P4). The
-trade-off is that SpeexDSP has no dual-microphone speech enhancement or
-wake-net stage: it processes one (or more, via the optional post-AEC
-beamformer) microphone channels against a playback reference.
+every ESP32 variant (best with a hardware FPU: ESP32, S2, S3, P4). Single- and
+multi-microphone operation are supported: each microphone receives echo
+cancellation, and enabling this component's optional post-AEC beamformer aligns
+and combines multiple microphones into one enhanced output. Upstream SpeexDSP
+does not provide that beamformer itself, and this component has no WakeNet
+stage; use ESPHome Micro Wake Word with the cleaned microphone output instead.
 
 > [!IMPORTANT]
 > This is a hardware-specific external component. It
@@ -38,9 +40,9 @@ already better suited:
 
 | ESP32-SpeexDSP facility | Used | Reason |
 | --- | --- | --- |
-| **AEC** (`speex_echo_*`, `mdf.c`) | Yes | The core of the pipeline. |
+| **AEC** (`speex_echo_*`, `mdf.c`) | Yes | The core replacement for the ESP-SR AEC. |
 | **NS + AGC** (`speex_preprocess_*`) | Yes | Runs on the AEC output; also applies residual-echo suppression by consuming the echo state (`SPEEX_PREPROCESS_SET_ECHO_STATE`). |
-| **VAD** (`speex_preprocess_*`) | Yes | Free with the preprocessor. Exposed via `get_vad_state()` / `get_vad_probability()`. |
+| **VAD** (`speex_preprocess_*`) | Yes | Free with the preprocessor; replaces the ESP-SR/AFE VAD signal. Exposed via `get_vad_state()` / `get_vad_probability()`. |
 | **Jitter buffer** (`jitter_buffer_*`) | No | It solves packet-arrival jitter for RTP/network audio. This component's timing problems are handled by the microphone's pre-roll/utterance FIFO and the playback prebuffering, which are matched to the I2S/HA-streaming failure modes. |
 | **Resampler** (`speex_resampler_*`) | No | The `resampler: true` option uses the component's adaptive drift compensator, which continuously retunes its ratio from measured I2S write timing. `speex_resampler` is a (higher quality, heavier) fixed-ratio converter and cannot track drift without being reconfigured every adjustment. |
 | **Ring buffer** (`speex_buffer_*`) | No | The ESPHome `ring_buffer` component is used instead — it wraps the same FreeRTOS ring buffer but is thread-safe across the three tasks involved and integrates with ESPHome tooling. |
@@ -68,9 +70,11 @@ ESPHome speaker (16-bit, 16 kHz, mono/stereo)
   -> four-slot full-duplex TDM TX -> DAC -> amplifier -> speaker
 ```
 
-Processing runs on a dedicated task pinned to core 0 at priority 4; the
-playback task runs on core 1 at priority 20. An over-budget frame yields so
-WiFi and the main loop never starve (visible as `rx_errors`).
+Processing runs on a dedicated task pinned to core 0 at priority 4. Playback
+runs at priority 20 on core 1 for dual-core targets and core 0 on single-core
+ESP32-S2. An over-budget frame yields so system work can run; diagnostics show
+the processing peak, and a resulting transport overrun may later appear as an
+`rx_error`.
 
 The audio task logs its own load every five seconds at INFO level:
 
@@ -155,9 +159,17 @@ enclosure produces harmonics that no reference-based canceller can remove.
 
 ```yaml
 external_components:
-  - source: github://YOUR_GITHUB_USER/YOUR_REPOSITORY@main
-    components: [aec_speexdsp, es7210]  # es7210 only if not supplied elsewhere
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome-aec
+      ref: main
+      path: src/esphome
+    components: [aec_speexdsp]
 ```
+
+The ES7210 support used by the Waveshare examples is a separate external
+component; follow the repository's
+[installation guide](../../../docs/getting-started.md) for its current source.
 
 For local development:
 
@@ -165,16 +177,19 @@ For local development:
 external_components:
   - source:
       type: local
-      path: components
-    components: [aec_speexdsp, es7210]
+      path: src/esphome
+    components: [aec_speexdsp]
 ```
 
 SpeexDSP itself is vendored inside the component (BSD-licensed; see the file
-headers), so no IDF managed component or Arduino library is needed.
+headers). The component automatically adds the `espressif/esp-dsp` IDF managed
+component used by its accelerated FFT; no Arduino library is required.
 
-Known-good starting configuration (S3; see `esp_s3_speexdsp_test.yaml` in the
-repository root — the P4/Waveshare pin mapping from `esp_1024_audio_test.yaml`
-can be substituted directly):
+The complete known-good P4 configurations are the Waveshare
+[audio test](../../../examples/waveshare-7b-audio-test/audio-test.yaml) and
+[voice assistant](../../../examples/waveshare-7b-voice-assistant/voice-assistant.yaml).
+The following is a compact ESP32-S3 starting point; replace its pins and codec
+configuration for the actual board:
 
 ```yaml
 esp32:
@@ -228,7 +243,8 @@ aec_speexdsp:
   tx_slots: [0, 1]
   frame_size: 256
   filter_length: 2048
-  agc: true
+  agc:
+    enabled: true
   noise_suppression: true
   vad: true
   resampler: true
@@ -266,22 +282,25 @@ the paired ESP-IDF TDM RX/TX channels.
 | `reference_delay_samples` | no | `0` | `0`–`4000`; `0`–`256` with `analog_slot`. 16 samples = 1 ms at 16 kHz. |
 | `tx_slots` | no | `[0, 1]` | Two TDM TX slots consumed by the DAC (mono is duplicated). |
 | `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of DSP output; for slot mapping. |
-| `frame_size` | no | `256` | Processing frame in samples; multiple of 64, `128`–`1024`. 256 = 16 ms. |
+| `frame_size` | no | `256` | Processing frame in samples; power of two: `128`, `256`, `512`, or `1024`. 256 = 16 ms. |
 | `filter_length` | no | `2048` | AEC tail length in samples (`256`–`16384`, ≥ `frame_size`). 2048 ≈ 128 ms of echo path. |
 | `output_channel` | no | `first` | `first`, `second`, or `mixed` (average; requires two microphone slots). |
 | `beamforming` | no | disabled | Adaptive delay-and-sum configuration below. Requires at least two microphone slots and supersedes `output_channel`. |
 | `noise_suppression` | no | `true` | Speex preprocessor denoise. |
 | `noise_suppression_level_db` | no | `15` | Maximum attenuation in dB (`5`–`60`). Higher absorbs more noise — and more speech. |
-| `agc` | no | `true` | Speex automatic gain control. |
-| `agc_target_level` | no | `0.25` | Target level as a fraction of full scale (`0.01`–`1.0`). `0.25` ≈ −12 dBFS. |
+| `agc.enabled` | no | `true` | Speex automatic gain control. |
+| `agc.max_gain` | no | `12` | Maximum AGC boost in dB (`0`–`60`). A cap, not a fixed gain; `0` prevents boost but not attenuation. |
+| `agc.target_level` | no | `0.25` | Target level as a fraction of full scale (`0.01`–`1.0`). `0.25` ≈ −12 dBFS. |
+| `agc.gate` | no | disabled | Reference-aware boost protection; see the [AGC gate](#reference-aware-agc-gate) section. |
 | `vad` | no | `true` | Speex voice activity detection on the processed channel. |
 | `vad_threshold` | no | `35` | Speech-start probability in percent (`20`–`90`). The speech-continue threshold stays at Speex's 20 %. |
 | `echo_suppress_db` | no | `40` | Residual-echo suppression (dB) applied by the preprocessor during far-end-only audio (`5`–`60`). |
 | `echo_suppress_active_db` | no | `15` | Residual-echo suppression (dB) during double-talk. Lower preserves near-end speech. |
 | `playback_gain_db` | no | `0` | Digital attenuation (`-60`–`0` dB) before the I2S TX and the reference tap. |
 | `resampler` | no | `false` | Enable the playback drift-compensating resampler around 16 kHz. |
-| `meters` | no | disabled | Compile an `AECSpeexDspMetersComponent`; accepts a nested component `id`. Exposes per-slot RMS/peak, reference and cleaned-output levels, clipping/alternation stats, and a UI-gated 32-bin spectrum. |
-| `telemetry` | no | `false` | Compile periodic `AEC_EFFECT` attenuation/correlation logging. |
+| `meters` | no | disabled | Compile an `AECSpeexDspMetersComponent`; accepts a nested component `id` and `enabled` (default `true`). Exposes per-slot RMS/peak, reference and cleaned-output levels, clipping/alternation stats, and a UI-gated 32-bin spectrum. |
+| `telemetry` | no | `false` | Compile `AEC_EFFECT` logging and one-second signal-stage diagnostics. |
+| `profiling` | no | `false` | Compile detailed per-stage CPU-cycle profiling counters. |
 | `slot_logs` | no | `false` | Compile five-second raw-slot and output level logging. |
 | `diagnostics` | no | `false` | Compile five-second error, timing, buffer, and VAD statistics. |
 
@@ -336,20 +355,128 @@ esphome:
 
 ## Tuning
 
+### Reference-aware AGC gate
+
+Normal AGC remains configurable as `agc: {enabled: true, max_gain: 12, target_level: 0.25}`.
+`agc.gate` limits amplification during playback without deleting audio.
+The former hard output gate has been removed; legacy `playback_gate` YAML
+blocks must be removed from configurations.
+
+The 1024 common configuration now selects reference-aware AGC gating:
+
+```yaml
+agc:
+  enabled: true
+  max_gain: 12
+  target_level: 0.25
+  gate:
+    enabled: true
+    reference_open_rms: 200
+    reference_close_rms: 100
+    open_rms: 24
+    close_rms: 12
+    open_delay_ms: 32
+    hold_ms: 250
+    tail_ms: 250
+    release_ms: 150
+    startup_guard_ms: 200
+```
+
+Reference activity uses actual AEC reference RMS, not queue occupancy. Below the
+reference closing threshold for `tail_ms`, AGC operates normally, even for quiet
+near-end speech. During reference activity, sustained suppressed pre-AGC RMS
+above `open_rms` permits normal AGC. Below `close_rms` for `hold_ms`, boost fades
+toward unity over `release_ms`; existing attenuation is preserved. The closed
+gate freezes loudness adaptation, never replaces samples with zeros, and does
+not reset the AEC. Quiet residual echo can therefore still reach the remote end.
+On reference activation, `startup_guard_ms` (default 200, 0 disables) immediately
+caps AGC gain at unity while preserving existing attenuation and blocks eligibility
+for that duration. AEC continues adapting and audio is not muted. Confirmation
+starts afresh afterwards. This prevents retained AGC boost and loud onset echo
+from immediately reopening eligibility; it does not guarantee removal of unboosted
+echo. Genuine speech at playback onset also passes without boost during the guard.
+The guard re-arms only after reference silence has satisfied `tail_ms`, not on
+brief gaps or underruns. Durations round up to audio-frame boundaries; output
+overlap-add can retain samples from the preceding frame.
+`AGC_GATE` telemetry reports reference activity, eligibility, `startup_guard`, and
+pre-AGC RMS. Its once-second snapshots may miss a short guard interval.
+The component default for this optional gate is disabled (speech thresholds
+64/32); the 1024 experiment explicitly keeps the previously selected 24/12.
+
+Gate levels are windowed RMS PCM counts from the suppressed spectrum before AGC;
+reference levels are time-domain PCM RMS. Both threshold pairs require
+0 < close < open <= 32768. Delays are integer milliseconds from 0 to 60000.
+
+With beamforming enabled, the residual-echo estimate is formed from raw and
+AEC-cleaned audio using identical steering and independent delay histories.
+The raw companion path does not perform localization; it reuses the current
+cleaned-audio delays and existing frame scratch storage. MDF also supplies its
+evolving removed-echo estimate before the global adaptation flag is set.
+This avoids an empty startup estimate, but does not guarantee immediate echo
+removal before the adaptive filter has learned the acoustic path.
+
 1. Map slots with `diagnostic_raw_slot` and `slot_logs: true`.
 2. Fix the reference (source, gain via `playback_gain_db`, delay via
    `reference_delay_samples`). The capture/play-back buttons are useful for
    measuring the delay by cross-correlation.
-3. Enable `telemetry: true` and compare `AEC_EFFECT` attenuation during
-   playback-only sections; verify double-talk survival by listening to the
-   cleaned stream while a response plays.
+3. Enable `telemetry: true`. During speaker-only playback, inspect
+   `AEC_STAGE_MIC` (raw and immediate post-AEC RMS), then `AEC_STAGE_PRE`
+   (preprocessor input/output RMS, last-frame AGC gain in dB and speech
+   probability). With beamforming enabled its output is preprocessor input 0;
+   otherwise each preprocessor is reported separately. `AEC_STAGES` reports
+   final output RMS/peak, full-scale sample count and the number of frames
+   with reference RMS above 500. One-second windows include pauses/tails.
+   Levels are not latency-aligned ERLE; AGC/probability are snapshots, not
+   window averages. Legacy `AEC_EFFECT` compares raw inputs with the same
+   final mono output: positive dB means amplification, and its zero-lag
+   correlation does not compensate processing delay. Verify double-talk
+   survival by listening to the cleaned stream while a response plays.
 4. Tune in this order: `noise_suppression_level_db`, `echo_suppress_db` /
    `echo_suppress_active_db`, `filter_length` (longer tails cancel longer
-   rooms but cost CPU and memory), `agc_target_level`.
+   rooms but cost CPU and memory), `agc.target_level`.
 5. Without beamforming, try `output_channel: second` (or `mixed`) if the first
    microphone is weaker. With beamforming, inspect the periodic `Beamformer
    profile` TDOA/confidence log and tune `max_lag` from the physical spacing
    before relaxing the confidence thresholds.
+
+## Residual echo investigation
+
+For a local barge-in listening test, flash `esp_1024_speexdsp_test.yaml`, select
+**DSP OUTPUT**, start **PLAY TEST AUDIO**, then press **RECORD 3 SECONDS** and
+speak over playback. Wait for the recording-ready message, then press
+**PLAY RECORDING** (this stops and clears test playback before replaying).
+Repeat once while silent and once with normal-volume speech. Capture copies
+the same final PCM buffer published to microphone listeners, after suppression
+and AGC, but does not include transport or remote processing. Selecting a raw
+source deliberately bypasses DSP; use DSP OUTPUT for this comparison.
+The test configuration matches the hall DSP settings, including reference-aware
+AGC gating and the 200 ms startup guard.
+
+With `telemetry: true`, `AEC_RESIDUAL last_frame` reports a snapshot alongside
+the one-second RMS summaries. `removed_rms` is the two-frame removed-echo history;
+`leak` is MDF's estimated leakage, and `adapted` is its convergence flag, not a
+speech detector. The residual power multiplier is `min(1, 2*leak)`.
+
+`input_ps`, fresh `residual_ps`, smoothed `echo_ps`, `noise_ps`, and
+`suppressed_ps` are sums of spectral power bins excluding Nyquist, not PCM RMS.
+`suppressed_ps` is before AGC. `Pframe` selects between the configured inactive
+and active echo suppression floors; `echo_floor_db` is that interpolated floor,
+not the attenuation actually achieved. These snapshots can miss brief events.
+
+For a silent-listener playback test, a small residual estimate despite substantial
+post-AEC input suggests an echo-model/leakage problem. A high `Pframe` selecting a
+weak floor suggests residual echo is being treated as near-end activity. Low
+suppressed power followed by high final RMS points toward AGC amplification.
+Repeat with actual near-end speech and beamforming off to distinguish these cases.
+Do not classify echo using quietness or speech probability alone.
+
+Beamforming uses matching raw and cleaned steering histories to construct the
+removed-echo estimate. However, the leakage estimate still comes from the shared
+multichannel MDF model, not a separately learned beam-output model. Its accuracy
+after steering is a remaining hypothesis to evaluate, not a proven defect.
+The echo and preprocessor analysis windows differ, so power ratios are diagnostic
+indicators, not an exact echo-only probability. Diagnostic sums run only when
+queried; they do not add an FFT or change AGC/gating policy.
 
 ## Current limitations
 
