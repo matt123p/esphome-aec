@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v1.00 - 2026-09-20
 
 ### Added
 
@@ -28,6 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   targets continue to place playback on CPU 1 and DSP processing on CPU 0.
 - Aligned the Waveshare examples and documentation on a 1,024-sample filter,
   retaining CPU and internal-RAM headroom for their complete workloads.
+- Added a dedicated microphone and reference gain check to the first-time
+  setup guide and its eight-stage bring-up diagram.
+
+### Fixed
+
+- Fixed the spectrum analyser to apply its Hann window over the actual audio
+  block before zero-padding, and made peak decay follow frame duration so
+  transient peaks fade by 20 dB in 300 ms.
 
 ## 2026-09-18
 

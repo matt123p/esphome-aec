@@ -1,5 +1,7 @@
 # AEC Audio for ESPHome
 
+**Version v1.00** — see the [changelog](changelog.md#v100---2026-09-20) for release notes.
+
 Talk to your ESPHome voice assistant while it is talking back.
 
 This repository provides an ESPHome component that brings full-duplex
@@ -70,7 +72,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/matt123p/esphome-aec
-      ref: main
+      ref: v1.00
       path: src/esphome
     components: [aec_speexdsp]
 ```

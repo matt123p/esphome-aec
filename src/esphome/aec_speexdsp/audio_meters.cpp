@@ -140,7 +140,18 @@ void AECSpeexDspMetersComponent::compute_spectrum_(const int16_t *mono, size_t f
   if (fft_re_ == nullptr)
     return;
 
+  // The canceller hands over one frame_size block per call. Window the block
+  // at its own length and zero-pad into the FFT; a Hann window must span the
+  // analysis window, so rebuild it whenever the block size changes (the
+  // constructor only prepared a full-FFT window).
+  static size_t window_frames = 0;
   const size_t n = std::min(frames, static_cast<size_t>(SPECTRUM_FFT_SIZE));
+  if (window_frames != n) {
+    const float denominator = static_cast<float>(n > 1 ? n : 2) - 1.0f;
+    for (size_t i = 0; i < n; i++)
+      hann_win_[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * i / denominator));
+    window_frames = n;
+  }
 
   // Window + copy to FFT buffer (real), zero imaginary
   for (size_t i = 0; i < n; i++) {
@@ -157,7 +168,13 @@ void AECSpeexDspMetersComponent::compute_spectrum_(const int16_t *mono, size_t f
   // Map FFT bins -> display bins; use peak-hold with per-frame exponential decay
   // scale: 2/N accounts for one-sided spectrum; Hann window halves amplitude
   const float scale = 2.0f / SPECTRUM_FFT_SIZE;
-  static const float decay = 0.965f;  // ~0.6 dB per frame @ 32 ms/frame -> ~2s for -20 dB decay
+  // Fall ~20 dB in 300 ms so the bars track the level the ear hears now. The
+  // previous fixed 0.965-per-frame decay assumed 32 ms frames; driven by
+  // 16 ms frames it held transient onsets (playback start, AGC gate events)
+  // near full scale for seconds, making a correctly cancelling output look
+  // like raw echo on the display.
+  const float frame_ms = static_cast<float>(frames) * 1000.0f / SAMPLE_RATE;
+  const float decay = std::pow(10.0f, -frame_ms / 300.0f);
 
   for (int k = 0; k < SPECTRUM_BINS; k++) {
     float peak_sq = 0.0f;

@@ -5,11 +5,11 @@ title: First-Time Board Setup
 # First-Time Board Setup and AEC Bring-Up
 
 Porting the component to a new board is primarily a hardware-validation
-exercise. Display, networking, codec control, raw capture, playback, and the
-AEC reference are separate systems; prove each one before evaluating echo
-cancellation.
+exercise. Display, networking, codec control, raw capture, playback, input
+gains, and the AEC reference are separate systems; prove each one before
+evaluating echo cancellation.
 
-![Seven-stage board bring-up sequence from basic boot through final DSP evaluation]({{ '/assets/diagrams/bring-up-stages.svg' | relative_url }})
+![Eight-stage board bring-up sequence from basic boot through final DSP evaluation]({{ '/assets/diagrams/bring-up-stages.svg' | relative_url }})
 
 The Waveshare ESP32-P4-WIFI6-Touch-LCD-7B settings in the
 [installation guide]({{ '/getting-started/' | relative_url }}) are the tested
@@ -83,7 +83,32 @@ Do not configure another component to own the same I2S peripheral or GPIOs.
 Flash over USB and inspect the startup log. Resolve allocation, I2S, or codec
 errors before assessing audio quality.
 
-## 4. Map every receive slot
+## 4. Set microphone and reference gains
+
+Correct input gains are a bring-up gate, not a later tuning detail. The AEC,
+AGC, and every subsequent check assume clean, unclipped microphone and
+reference signals; no DSP setting can repair samples that were already clipped
+by the ADC.
+
+With the hub still in diagnostic mode (`slot_logs: true` or the audio-test
+meters), play a repeatable test signal through the component's speaker at the
+loudest intended volume and set both levels:
+
+- **Microphones.** Speak at the normal usage distance and adjust the ADC gain
+  (`mic_gain` on the ES7210) until speech is strong but peaks stay well below
+  digital full scale. Both microphone slots should end up similarly sensitive.
+  Leave headroom: AEC and AGC cannot recover clipped samples.
+- **Reference.** The analog reference must closely follow playback without
+  reaching digital full scale. Lower that slot's ADC gain first; if the
+  reference level is still too high at the minimum gain, reduce the DAC output
+  with the software DAC output gain `playback_gain_db` (the Waveshare 7B uses
+  `-12` dB). It attenuates audio before it reaches both the DAC and the
+  reference tap, trading a little maximum playback volume for an undistorted
+  reference. Re-test the speaker and the raw reference at the loudest intended
+  volume afterwards. See
+  [Prevent reference clipping]({{ '/tuning/' | relative_url }}#4-prevent-reference-clipping).
+
+## 5. Map every receive slot
 
 Set `diagnostic_raw_slot` to each value from `0` through `3`, rebuilding as
 needed. Listen to or record the published microphone while you:
@@ -93,15 +118,14 @@ needed. Listen to or record the published microphone while you:
 3. observe the raw-slot RMS/peak logs.
 
 Both microphone channels must be intelligible, similarly sensitive, and free
-of clipping, buzz, repeated samples, and incorrect pitch. Adjust gain in the
-ADC component. Leave headroom: AEC and AGC cannot repair samples already clipped
-by the ADC.
+of clipping, buzz, repeated samples, and incorrect pitch. If the levels are
+wrong, return to the gain check in step 4 before continuing.
 
 Update `microphone_slots` only after this test. On the reference Waveshare 7B,
 the tested microphone slots are `[0, 2]` and slot `1` is the hardware reference;
 another board may differ.
 
-## 5. Verify playback
+## 6. Verify playback
 
 Send signed 16-bit, 16 kHz mono or stereo PCM through the component's speaker.
 Check that playback reaches the intended DAC channels cleanly and that capture
@@ -112,9 +136,10 @@ continues during playback. If there is silence or distortion, verify DOUT,
 decoder or a general sample-rate converter, so source audio must still be
 nominally 16 kHz PCM.
 
-## 6. Verify the reference
+## 7. Verify the reference
 
 For `reference_source: analog_slot`, test the proposed slot in diagnostic mode.
+Its level was set in step 4; re-check it here if playback sounds distorted.
 It should be quiet when playback is stopped, closely follow playback when it is
 active, and respond little to room speech. A spare or microphone-connected ADC
 channel is not a playback reference. Set the verified slot as `reference_slot`
@@ -141,7 +166,7 @@ correlation peak as an initial `reference_delay_samples` value. Then sweep nearb
 values while keeping the clip, volume, room, and microphone position fixed. The
 accepted range is 0–4000 samples (0–250 ms).
 
-## 7. Enable and evaluate the DSP
+## 8. Enable and evaluate the DSP
 
 Remove `diagnostic_raw_slot` to publish the cleaned output. Test the same
 phrase in three conditions: speech only, playback only, and simultaneous speech
