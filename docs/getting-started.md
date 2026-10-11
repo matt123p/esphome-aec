@@ -24,7 +24,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/matt123p/esphome-aec
-      ref: main
+      ref: v1.01
       path: src/esphome
     components: [aec_speexdsp]
 ```
@@ -105,7 +105,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/matt123p/esphome-aec
-      ref: main
+      ref: v1.01
       path: src/esphome
     components: [aec_speexdsp]
   - source:

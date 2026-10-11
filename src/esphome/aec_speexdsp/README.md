@@ -22,7 +22,6 @@ playback resumption after 300 ms of reference silence cancels the old tail.
 - [Audio test](../../../examples/waveshare-7b-audio-test/)
 - [Standard voice assistant](../../../examples/waveshare-7b-voice-assistant/)
 
-The current features and recovery fixes are unreleased on `main`; the `v1.00`
-tag retains its published behavior. Host checks do not establish acoustic
-accuracy: validate assistant-only playback, normal/quiet interruptions and
+These features and recovery fixes are included in `v1.01`. Host checks do not
+establish acoustic accuracy: validate assistant-only playback, normal/quiet interruptions and
 replacement replies on the intended hardware.

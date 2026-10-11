@@ -13,9 +13,10 @@ not require this detector. AEC continues running in every mode.
 The supplied [voice-assistant example]({{ '/examples/' | relative_url }})
 does **not** enable barge-in. Adding a detector cannot make a standard assistant
 session interruptible by itself: the assistant/provider must implement that
-response lifecycle. This repository does not bundle the custom assistant engine.
+response lifecycle. The optional bundled assistant engine requires separate
+configuration, as described below.
 
-This feature is currently on `main`; the released `v1.00` tag predates it.
+This feature is included in release `v1.01`.
 
 ## How VAD is selected
 
@@ -163,7 +164,7 @@ enabling it on other targets.
 
 ## Optional bundled voice-assistant engine
 
-Load both components from the same unreleased source when using the custom
+Load both components from the same `v1.01` release when using the custom
 full-duplex engine:
 
 ```yaml
@@ -171,7 +172,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/matt123p/esphome-aec
-      ref: main
+      ref: v1.01
       path: src/esphome
     components: [aec_speexdsp, voice_assistant]
     refresh: 0s

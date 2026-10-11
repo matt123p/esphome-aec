@@ -1,6 +1,6 @@
 # AEC Audio for ESPHome
 
-**Latest release: v1.00** — see the [changelog](changelog.md#v100---2026-09-20) for release notes.
+**Latest release: v1.01** — see the [changelog](changelog.md#v101---2026-10-11) for release notes.
 
 Talk to your ESPHome voice assistant while it is talking back.
 
@@ -17,16 +17,14 @@ one second of echo path), providing significantly better echo suppression in
 reflective rooms. It is plain C that builds for every ESP32 variant with an
 FPU, with no closed-source binaries.
 
-The current `main` branch also includes optional
+Release `v1.01` includes optional
 [GRU barge-in detection](docs/neural-barge-in.md) and independent SpeexDSP/GRU
-probability sensors. Use `ref: main` to try these unreleased features; the
-`v1.00` installation snippet below remains the last tagged release. The bundled
-voice-assistant example intentionally leaves barge-in disabled.
+probability sensors. Use `ref: v1.01` as shown in the installation snippet below.
+The bundled voice-assistant example intentionally leaves barge-in disabled.
 
 Hardware-reference samples reach AEC directly from the synchronized TDM capture. The optional bundled `voice_assistant` component
 includes full-duplex capture and API recovery fixes; see the
-[GRU integration guide](docs/neural-barge-in.md). These are unreleased changes
-on `main`, not changes to the `v1.00` tag.
+[GRU integration guide](docs/neural-barge-in.md). These changes are included in `v1.01`.
 
 ## Why use it?
 
@@ -83,7 +81,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/matt123p/esphome-aec
-      ref: v1.00
+      ref: v1.01
       path: src/esphome
     components: [aec_speexdsp]
 ```
