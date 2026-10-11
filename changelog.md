@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Nonblocking 100 ms wake-word confirmation beep through the speaker/reference
+  path. Capture and AEC continue while the voice assistant starts.
+
 - Optional raw84 Dense32/GRU24 barge-in detector trained on captured data
   from the Waveshare 7B board using corrected acoustic labels. The model has
   6,921 parameters and 16 causal frames; calibrated threshold 0.9995.

@@ -14,6 +14,7 @@ playback resumption after 300 ms of reference silence cancels the old tail.
 - [Installation](../../../docs/getting-started.md)
 - [Configuration](../../../docs/configuration.md)
 - [Architecture and microphone handoff](../../../docs/architecture.md)
+- [Wake-word confirmation](../../../docs/wake-word-confirmation.md)
 - [Reference timing](../../../docs/reference-timing.md)
 - [GRU, capture gate and optional voice-assistant engine](../../../docs/neural-barge-in.md)
 - [Testing and tuning](../../../docs/tuning.md)

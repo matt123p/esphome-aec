@@ -388,6 +388,7 @@ micro_wake_word:
   on_wake_word_detected:
     # Preserve speech captured while the wake-word listener hands over to VA.
     - lambda: id(voice_microphone).request_pre_roll();
+    - lambda: id(voice_audio).play_wake_beep();
     - lambda: |-
         id(voice_assistant_engine).set_wake_word(wake_word);
         id(assistant_state) = 1;

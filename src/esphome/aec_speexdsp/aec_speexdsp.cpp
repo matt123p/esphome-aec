@@ -40,11 +40,6 @@ extern "C" void speex_preprocess_profile_get(unsigned long long cycles[6], unsig
 
 static const char *const TAG = "aec_speexdsp";
 static constexpr uint32_t AUDIO_TASK_STACK_BYTES = 8192;
-// Reference alignment near-end veto: the microphone may carry at most this
-// multiple of the reference RMS while alignment runs. Echo-dominated playback
-// measures around 2-3x on this hardware; near-end speech without meaningful
-// playback exceeds 10x and yields correlation peaks unrelated to the echo
-// path, so those frames must not feed the tracker.
 // Sized for two seconds of stereo PCM (four seconds for the mono Assist
 // stream). Long live-model replies can arrive with multi-second gaps followed
 // by large bursts, so the previous one-second stereo reserve was too small.
@@ -1287,6 +1282,10 @@ void AECSpeexDspComponent::run_playback_task_() {
       }
     }
 
+    // The wake cue bypasses rebuffering, but shares gain, TX and reference.
+    const size_t beep_frames = this->wake_beep_.render(playback, frame_size, channels);
+    playback_bytes = std::max(playback_bytes, beep_frames * channels * sizeof(int16_t));
+
     // Attenuate media before the reference tap so TX output and AEC reference
     // stay identical.
     if (this->playback_gain_ != 1.0f && playback_bytes > 0) {
@@ -2045,6 +2044,7 @@ bool AECSpeexDspComponent::has_buffered_data() const {
 }
 
 void AECSpeexDspComponent::clear_playback() {
+  this->wake_beep_.stop();
   if (this->playback_buffer_ != nullptr)
     this->playback_buffer_->reset();
 

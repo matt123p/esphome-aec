@@ -177,3 +177,9 @@ intentionally asymmetric. Priority 20 protects continuous I2S transmission
 from ordinary application work, while priority 4 does not mean that audio
 processing is unimportant. Per-frame buffers use internal RAM; playback and
 reference queues use ESPHome ring buffers.
+
+## Wake-word cue
+
+The example requests a short [confirmation beep]({{ '/wake-word-confirmation/' | relative_url }})
+after retaining microphone pre-roll. The playback task includes the cue in the
+speaker/reference path while capture, AEC and voice-pipeline startup continue.

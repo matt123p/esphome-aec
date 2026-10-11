@@ -75,3 +75,8 @@ remove that `external_components` entry.
 
 The `update_assistant_ui` script is the single rendering point for those
 states. The other scripts own start, stop, timeout, and cleanup transitions.
+
+A detected wake word plays a short confirmation beep. Capture and AEC continue,
+and the voice pipeline starts without waiting for the cue. See
+[wake-word confirmation](../../docs/wake-word-confirmation.md) for integration
+and volume handling.

@@ -27,6 +27,7 @@
 #include "cancellation_quality.h"
 #include "soft_double_talk.h"
 #include "near_end_correlation.h"
+#include "wake_beep.h"
 #ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
 #include "neural_barge_in.h"
 #endif
@@ -201,6 +202,8 @@ class AECSpeexDspComponent : public Component {
 #endif
   void set_microphone(AECSpeexDspMicrophone *microphone) { this->microphone_ = microphone; }
   void set_speaker(AECSpeexDspSpeaker *speaker) { this->speaker_ = speaker; }
+  void play_wake_beep() { this->wake_beep_.start(); }
+  bool is_wake_beep_active() const { return this->wake_beep_.active(); }
   void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
   // Digital attenuation applied to media playback before the I2S TX and the
   // reference tap, keeping the analog chain (amp, loopback) out of clipping.
@@ -386,6 +389,7 @@ class AECSpeexDspComponent : public Component {
   uint16_t reference_delay_samples_{0};
   float playback_gain_db_{0.0f};
   float playback_gain_{1.0f};
+  WakeBeep wake_beep_;
   bool beamforming_enabled_{false};
   AdaptiveDelayAndSumBeamformer beamformer_;
   AdaptiveDelayAndSumBeamformer raw_beamformer_;
