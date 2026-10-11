@@ -60,22 +60,24 @@ the automatic rate-matching test below.
 
 ### Automatic rate matching
 
-The host and satellite have independent clocks. To test whether their small
-sustained difference is causing playback drift:
+The actual I2S sample clock can differ slightly from the requested 16,000 Hz
+because of clock-divider rounding and source clock tolerance. To test the
+correction for this hardware sample-rate error:
 
 1. Enable `resampler: true` and `diagnostics: true`.
 2. Play continuous, nominally 16 kHz PCM for at least 30 seconds. Several
    minutes is better for exposing a small mismatch.
 3. Confirm the log initially reports `Playback resampler enabled` at 16000 Hz.
-4. Watch `Playback rate adjust` for the measured I2S rate and the gradually
+4. Watch `Playback rate adjust` for the estimated I2S rate and the gradually
    adjusted playback rate. `Playback input rate` is informational only —
    bursty offered/accepted throughput is normal and does not move the target.
 5. Confirm playback remains continuous and that underrun, TX-error, and dropped
    frame counters do not continually rise.
 
-A settled playback rate slightly above or below 16 kHz is expected; it
-indicates that the component is adding or removing a small number of
-interpolated samples to keep the one-second playback buffer stable. The
+A settled playback rate slightly above or below 16 kHz means the component is
+adding or removing a small number of interpolated samples to compensate for
+the estimated hardware rate. The estimate comes from blocking write timing,
+so DMA buffering and task scheduling can also influence it. The
 correction is retained for the next response and refined as new measurements
 arrive.
 

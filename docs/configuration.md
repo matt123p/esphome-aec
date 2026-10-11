@@ -215,8 +215,9 @@ esphome:
 
 ## Automatic playback rate matching
 
-Enable rate matching when Home Assistant playback is nominally 16 kHz but long
-responses slowly underrun or overrun:
+Enable rate matching to compensate for a small difference between nominally
+16 kHz PCM and the actual I2S playback rate. Clock-divider rounding and source
+clock tolerance can make the hardware rate differ from the requested 16,000 Hz:
 
 ```yaml
 aec_speexdsp:
@@ -224,9 +225,10 @@ aec_speexdsp:
   resampler: true
 ```
 
-The component measures the rate at which completed frames are written to the
-I2S peripheral — the satellite's real playback clock — and gently resamples
-the host stream to match it. Correction is automatic: there is no rate or
+The component estimates the hardware playback rate from successful blocking
+I2S write durations and gently resamples the nominally 16 kHz PCM to match it.
+Write timing is a proxy for the hardware rate and can also be affected by DMA
+buffering and task scheduling. Correction is automatic: there is no rate or
 ratio to configure. The measured rate is clamped to 15–17 kHz, and the active
 correction moves toward it one hertz at a time to avoid abrupt pitch or timing
 changes. Its last learned rate is reused at the beginning of the next playback
@@ -234,7 +236,7 @@ stream. Network delivery is bursty, and its throughput is deliberately not
 treated as a sample rate: short-term delivery variation is absorbed by the
 playback buffer rather than by changing voice pitch.
 
-This option is for small clock and delivery-rate differences, not source-format
+This option is for small hardware sample-rate errors, not source-format
 conversion. The speaker input must remain signed 16-bit, nominally 16 kHz PCM.
 See [How It Works]({{ '/architecture/' | relative_url }}#playback-automatic-rate-matching-and-reference)
 for the control flow and [Testing & Tuning]({{ '/tuning/' | relative_url }}#automatic-rate-matching)

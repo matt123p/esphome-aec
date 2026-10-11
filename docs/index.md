@@ -17,8 +17,9 @@ speaker endpoints.
   own loudspeaker echo, reducing background noise, and applying automatic gain
   control (AGC) so quiet and loud speech arrive at a more useful level.
 
-- Its optional rate matching compensates for small, sustained playback-rate
-  differences, helping prevent under-runs or over-runs during long responses.
+- Its optional rate matching compensates for small differences between nominal
+  16 kHz PCM and the actual I2S sample clock, helping prevent under-runs or
+  over-runs during continuously paced playback.
 
 - Its rolling pre-buffer bridges wake-word detection and voice-assistant
   capture, preserving the beginning of the user's request when the integration

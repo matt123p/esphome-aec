@@ -5,6 +5,11 @@ cancellation/preprocessing, optional beamforming, and ESPHome microphone and
 speaker interfaces. Hardware references pass directly from their TDM slot to
 AEC; software playback references retain optional delay compensation.
 
+Optional playback rate matching resamples nominally 16 kHz PCM to compensate
+for the actual I2S sample rate, which can differ from the requested rate because
+of clock-divider rounding and source clock tolerance. It estimates that rate
+from blocking I2S write timing; network delivery speed is not its target.
+
 The optional raw84 Dense32/GRU24 detector supplies VAD during reference playback
 with an active assistant. Outside that scope, SpeexDSP supplies VAD. Independent
 probability sensors expose both detectors. A confirmed capture gate retains

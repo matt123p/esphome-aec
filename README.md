@@ -40,7 +40,7 @@ includes full-duplex capture and API recovery fixes; see the
   the utterance while control passes from wake-word detection to the voice
   assistant.
 - **Long-playback stability** — optional rate matching compensates for small,
-  sustained source/clock differences.
+  differences between nominal 16 kHz PCM and the actual I2S sample clock.
 - **Bring-up tools** — raw-slot selection, meters, spectrum analysis,
   diagnostics, and a short capture/playback API help validate new hardware.
 

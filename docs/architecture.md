@@ -127,29 +127,35 @@ playback copy is needed.
 
 ### Why rate matching is needed
 
-The Home Assistant host and the satellite do not share an audio clock. The host
-may label its PCM as 16 kHz while delivering it at a sustained average rate that
-is slightly faster or slower than the satellite's physical 16 kHz TDM clock.
-Network packet timing can add short bursts and gaps, but over a long response a
-small underlying rate error steadily fills or drains the playback buffer. The
-eventual result is an overrun, underrun, click, or truncated audio even though a
-short response sounds correct.
+Requesting 16,000 Hz from the I2S peripheral does not guarantee an actual TDM
+sample clock of exactly 16,000 Hz. The hardware derives that clock from its
+source clock using dividers with finite precision; divider rounding and source
+clock tolerance can leave the physical sample rate slightly above or below the
+requested rate. Rate matching compensates for this difference between the
+nominal PCM sample rate and the satellite's actual playback rate.
 
-![Comparison of playback-buffer drift with and without automatic host-to-satellite rate matching]({{ '/assets/diagrams/rate-matching.svg' | relative_url }})
+Without correction, the same number of input samples takes slightly more or
+less time to play than the PCM format specifies. During continuously paced
+playback this can gradually fill or drain the playback buffer. Home Assistant
+can also deliver audio in bursts, but packet arrival speed does not define the
+PCM sample rate and is not the correction target.
 
-With `resampler: true`, the component automatically matches the incoming host
-stream to the satellite clock:
+![Comparison of playback-buffer drift with and without automatic I2S clock rate matching]({{ '/assets/diagrams/rate-matching.svg' | relative_url }})
+
+With `resampler: true`, the component automatically resamples nominally 16 kHz
+PCM to match the satellite's estimated hardware playback rate:
 
 1. Playback starts at the nominal 16,000 samples per second.
-2. The component measures the rate at which complete frames are written to the
-   TDM peripheral. That hardware measurement is the satellite's real playback
-   clock, and it is the only correction target: network delivery is bursty,
-   and its throughput is not the PCM sample rate.
+2. The component estimates the hardware consumption rate from the duration of
+   successful blocking I2S writes containing a full frame of playback audio.
+   This is an estimate from write timing, not a direct measurement of the clock
+   signal: DMA buffering and task scheduling can affect it. It is the only
+   correction target; network throughput is not the PCM sample rate.
 3. The measured rate is clamped to 15,000–17,000 Hz, and the active correction
    moves toward it one hertz at a time instead of changing abruptly.
 4. A continuous fractional-phase linear interpolator produces slightly more or
-   fewer samples for the fixed 16 kHz output. Phase and the preceding sample
-   carry across packet boundaries, avoiding a discontinuity at each packet.
+   fewer samples for the actual hardware output rate. Phase and the preceding
+   sample carry across packet boundaries, avoiding a discontinuity at each packet.
 
 The learned playback rate is retained between streams so a later response can
 begin with the previous correction. Stopping or clearing playback resets
@@ -157,8 +163,8 @@ interpolation state so samples from two unrelated streams are never blended.
 Short-term delivery variation — bursts and gaps from the network — is absorbed
 by the one-second playback buffer rather than by changing voice pitch.
 
-This is automatic transport-clock compensation. It does not decode compressed
-audio, accept a genuinely different sample rate, repair severe network
+This is automatic hardware sample-rate compensation. It does not decode
+compressed audio, accept a genuinely different sample rate, repair severe network
 starvation, or change the hardware clock. Input must still be signed 16-bit,
 nominally 16 kHz PCM. Mono and stereo are both supported.
 
