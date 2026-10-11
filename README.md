@@ -23,9 +23,10 @@ probability sensors. Use `ref: main` to try these unreleased features; the
 `v1.00` installation snippet below remains the last tagged release. The bundled
 voice-assistant example intentionally leaves barge-in disabled.
 
-The `main` branch also provides opt-in
-[automatic analogue-reference alignment](docs/reference-alignment.md), using
-bounded acquisition and local tracking to reduce CPU spikes.
+Hardware-reference samples reach AEC directly from the synchronized TDM capture. The optional bundled `voice_assistant` component
+includes full-duplex capture and API recovery fixes; see the
+[GRU integration guide](docs/neural-barge-in.md). These are unreleased changes
+on `main`, not changes to the `v1.00` tag.
 
 ## Why use it?
 

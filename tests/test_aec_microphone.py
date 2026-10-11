@@ -167,14 +167,13 @@ int main() {
   budget=128000; while(gated.queued()) gated.tick();
   assert(gated.dropped()==0);
  }
- // Rejected far-end audio must not leak through pre-roll or endpointing tail.
- // Uncertain syllables after release stay byte-exact across a provider flush.
+ // Below-threshold syllables stay byte-exact through hangover and a provider flush.
  {
   Mic speech; speech.setup(); speech.start(); speech.set_barge_in_active(true);
-  auto frame = [&](uint8_t value, bool near) {
-    std::vector<uint8_t> v(512,value); speech.publish(v.data(),v.size(),near,false); speech.tick();
+  auto frame = [&](uint8_t value, bool near, bool rejected=true) {
+    std::vector<uint8_t> v(512,value); speech.publish(v.data(),v.size(),near,rejected&&!near); speech.tick();
   };
-  for(int i=0;i<3;i++) frame(40,false); // "actually" before confirmation
+  for(int i=0;i<3;i++) frame(40,false,false); // onset candidates before confirmation
   frame(41,true);
   for(int i=0;i<20;i++) frame(42,false); // weak "tell me about", not proven echo
   assert(!speech.set_barge_in_active(true)); // provider flush/replacement callback
@@ -183,7 +182,7 @@ int main() {
   assert(std::all_of(speech.output().begin()+4*512,speech.output().begin()+24*512,[](auto v){return v==42;}));
   assert(std::all_of(speech.output().begin()+24*512,speech.output().end(),[](auto v){return v==43;}));
  }
- // Only positively identified far-end frames are labelled rejected here.
+ // Closed-gate rejected pre-roll stays silent; open-gate PCM is continuous.
  {
   Mic echo; echo.setup(); echo.start(); echo.set_barge_in_active(true);
   auto frame = [&](uint8_t value, bool near, bool rejected) {
@@ -200,11 +199,47 @@ int main() {
   for(int i=0;i<63;i++) frame(99,false,true);
   assert(!echo.is_near_end_speech());
   assert(echo.output().size()==95*512);
-  assert(std::all_of(echo.output().begin()+32*512,echo.output().end(),[](auto v){return v==0;}));
+  assert(std::all_of(echo.output().begin()+32*512,echo.output().end(),[](auto v){return v==99;}));
   frame(99,false,true);assert(echo.output().size()==95*512);
   // Outside the barge-in gate, wake-word and ordinary capture stay untouched.
   echo.set_barge_in_active(false);frame(99,false,true);
   assert(echo.output().back()==99);
+ }
+ // Replacement playback after real silence cancels only the inherited tail.
+ {
+  Mic restart; restart.setup(); restart.start(); restart.set_barge_in_active(true);
+  restart.set_delivery_condition([](size_t){return false;});
+  auto frame = [&](uint8_t value, bool near, bool playing) {
+    std::vector<uint8_t> v(512,value);
+    restart.publish(v.data(),v.size(),near,playing&&!near,playing); restart.tick();
+  };
+  frame(41,true,true);
+  for(int i=0;i<19;i++) frame(42,false,false); // 304 ms of reference silence
+  frame(43,true,false); // speech immediately before the quick replacement
+  const auto queued=restart.queued();
+  frame(99,false,true);
+  assert(restart.queued()==queued); // no replacement echo; retained speech survives
+  frame(99,false,true); assert(restart.queued()==queued);
+  frame(44,true,true); assert(restart.queued()>queued); // fresh speech reopens
+  restart.set_delivery_condition([](size_t){return true;});
+  while(restart.queued()) restart.tick();
+  assert(std::count(restart.output().begin(),restart.output().end(),uint8_t{99})==0);
+  assert(std::count(restart.output().begin(),restart.output().end(),uint8_t{43})==512);
+  assert(std::count(restart.output().begin(),restart.output().end(),uint8_t{44})==512);
+  assert(restart.dropped()==0);
+ }
+ // Short gaps inside the same reply must not cut off weak user syllables.
+ {
+  Mic pause; pause.setup(); pause.start(); pause.set_barge_in_active(true);
+  auto frame = [&](uint8_t value, bool near, bool playing) {
+    std::vector<uint8_t> v(512,value);
+    pause.publish(v.data(),v.size(),near,playing&&!near,playing); pause.tick();
+  };
+  frame(41,true,true);
+  for(int i=0;i<4;i++) frame(42,false,false); // 64 ms
+  frame(43,false,true);
+  assert(pause.output().size()==6*512);
+  assert(pause.output().back()==43);
  }
  // Cancel an armed handoff and verify later wake-word delivery resumes.
  m.request_pre_roll(); m.frame(8); m.discard_pending_audio();

@@ -26,7 +26,6 @@
 #include "near_end_detector.h"
 #include "cancellation_quality.h"
 #include "soft_double_talk.h"
-#include "reference_delay_tracker.h"
 #include "near_end_correlation.h"
 #ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
 #include "neural_barge_in.h"
@@ -200,9 +199,6 @@ class AECSpeexDspComponent : public Component {
     voice_assistant_active_condition_ = std::move(condition);
   }
 #endif
-  void set_auto_reference_alignment(bool enabled) { this->auto_reference_alignment_ = enabled; }
-  int get_reference_delay_samples() const { return this->reference_delay_.load(); }
-  uint32_t get_reference_alignment_peak_us() const { return this->reference_alignment_peak_us_.load(); }
   void set_microphone(AECSpeexDspMicrophone *microphone) { this->microphone_ = microphone; }
   void set_speaker(AECSpeexDspSpeaker *speaker) { this->speaker_ = speaker; }
   void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
@@ -320,7 +316,6 @@ class AECSpeexDspComponent : public Component {
   static const size_t CAPTURE_SECONDS = 3;
   static const size_t CAPTURE_FRAMES = CAPTURE_SECONDS * 16000;  // 16 kHz mono
   // Cap of the runtime analog-reference delay history.
-  static constexpr int REFERENCE_DELAY_MAX_SAMPLES = 256;
 
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait);
   bool has_buffered_data() const;
@@ -339,7 +334,6 @@ class AECSpeexDspComponent : public Component {
   void capture_frame_(const int16_t *mono, size_t frames);
   void capture_diag_frame_(const int16_t *raw, const int16_t *ref, size_t frames);
   void diag_record_event_(const char *id);
-  void apply_reference_delay_(int16_t *ref, size_t frames);
 #ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
   std::vector<int16_t> resample(const int16_t *input, size_t frames, uint8_t channels);
   void initialise_resampler();
@@ -389,19 +383,12 @@ class AECSpeexDspComponent : public Component {
   uint8_t echo_suppress_db_{40};
   uint8_t echo_suppress_active_db_{15};
   bool soft_double_talk_enabled_{false};
-  bool auto_reference_alignment_{false};
   uint16_t reference_delay_samples_{0};
   float playback_gain_db_{0.0f};
   float playback_gain_{1.0f};
   bool beamforming_enabled_{false};
   AdaptiveDelayAndSumBeamformer beamformer_;
   AdaptiveDelayAndSumBeamformer raw_beamformer_;
-  // Runtime analog-reference delay in RAM (no persistence). Seeded from
-  // reference_delay_samples_ at setup.
-  std::atomic<int> reference_delay_{0};
-  std::atomic<uint32_t> reference_alignment_peak_us_{0};
-  int16_t reference_history_[REFERENCE_DELAY_MAX_SAMPLES + 1]{};
-  size_t reference_history_pos_{0};
   std::atomic<bool> vad_state_{false};
   std::atomic<float> vad_probability_{0.0f};
   std::atomic<float> speex_vad_probability_{0.0f};
@@ -438,7 +425,6 @@ class AECSpeexDspComponent : public Component {
   bool near_end_enabled_{false};
   NearEndDetector near_end_detector_;
   SoftDoubleTalkController soft_double_talk_;
-  ReferenceDelayTracker reference_delay_tracker_;
   NearEndCorrelation near_end_correlation_;
   ReferenceTracker reference_tracker_;
   CancellationQuality cancellation_quality_;
@@ -551,7 +537,8 @@ class AECSpeexDspMicrophone : public microphone::Microphone, public Component {
   void start() override;
   void stop() override;
   void set_parent(AECSpeexDspComponent *parent) { this->parent_ = parent; }
-  void publish(const uint8_t *data, const size_t data_size, bool near_end = false, bool echo_rejected = false);
+  void publish(const uint8_t *data, const size_t data_size, bool near_end = false, bool echo_rejected = false,
+               bool playback_active = false);
   void request_pre_roll();
   size_t begin_pre_roll_replay();
   void discard_pending_audio();
@@ -589,6 +576,8 @@ class AECSpeexDspMicrophone : public microphone::Microphone, public Component {
   bool barge_in_active_{false};
   std::atomic<bool> near_end_speech_{false};
   uint64_t speech_until_byte_{0};
+  bool playback_active_{false};
+  size_t playback_silence_bytes_{0};
   uint64_t last_enqueued_byte_{0};
   std::function<bool(size_t)> delivery_condition_{};
   uint32_t last_delivery_ms_{0};

@@ -9,8 +9,9 @@ title: Troubleshooting & Limitations
 - **Silence or the wrong microphone:** map every slot with
   `diagnostic_raw_slot`; do not assume the codec's channel order.
 - **No cancellation:** verify that the reference contains playback, confirm
-  reference polarity/gain, then measure delay. A silent or badly shifted
-  reference cannot cancel echo.
+  reference polarity/gain and check for clipping. With a software playback
+  reference, also measure its latency. A missing or clipped reference cannot
+  cancel echo.
 - **Speech sounds chopped or metallic:** reduce `echo_suppress_db` /
   `echo_suppress_active_db`, shorten the filter, test with noise suppression
   disabled, and check that the ADC is not clipping.
@@ -52,7 +53,7 @@ title: Troubleshooting & Limitations
   (C3/C5/C6) also run this floating-point code in slow soft-float.
 - **Residual echo remains at the end of loud playback:** the echo tail is
   longer than the filter. Increase `filter_length` (this is the main advantage
-  of this component), or reduce `reference_delay_samples` error so the tail is
+  of this component), or, with a software playback reference, reduce its delay error so the tail is
   spent on the room rather than the fixed offset.
 
 For hardware bring-up problems (blank display, undetected codecs, silent
@@ -70,7 +71,8 @@ section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
   (or combined by the optional post-AEC beamformer, which improves pickup but
   is not source separation).
 - No wake-net (feed the cleaned microphone to ESPHome Micro Wake Word instead).
-- Manual reference gain tuning; optional automatic analogue-reference delay tracking (measure the
-  delay with the capture API or the audio-test page).
+- Reference gain requires measurement and tuning. Hardware references pass
+  through directly; software playback references provide manual delay
+  compensation.
 - Four-slot Philips TDM, 16-bit PCM, and 16 kHz are fixed.
 - AEC cannot fully model loudspeaker nonlinearities or rescue clipped signals.

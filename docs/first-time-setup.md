@@ -143,9 +143,7 @@ Its level was set in step 4; re-check it here if playback sounds distorted.
 It should be quiet when playback is stopped, closely follow playback when it is
 active, and respond little to room speech. A spare or microphone-connected ADC
 channel is not a playback reference. Set the verified slot as `reference_slot`
-and begin with `reference_delay_samples: 0`. Analog-reference delays up to 256
-samples (16 ms) can be tested; SpeexDSP also adapts over a range of delays
-itself, so the value only needs to be roughly right.
+and use the captured reference directly.
 
 If the board has no hardware feedback path, use:
 

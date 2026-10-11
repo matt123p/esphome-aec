@@ -34,11 +34,7 @@ an AEC filter length of `1024` samples to retain CPU headroom for the meters,
 spectrum, and display.
 
 There is no automatic reference-delay tuning on this engine. The configuration
-sets `reference_delay_samples: 7`, the value measured for this board's
-amp/loopback path; SpeexDSP adapts over a range of delays itself, so the value
-only needs to be roughly right. To measure it on another board, record a raw
-microphone slot while playing a repeatable signal and cross-correlate the two
-(see [Testing & Tuning](https://matt123p.github.io/esphome-aec/tuning/)).
+uses the hardware reference directly, without an added delay.
 
 The configuration loads ES7210 TDM support from ESPHome pull request 18954
 until that change is merged. If it has since landed in your ESPHome release,

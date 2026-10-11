@@ -75,10 +75,11 @@ feature that was not compiled in.
 | `speech_protection` | `false` | Use GRU probability to protect near speech in the Speex preprocessor during barge-in scope. |
 | `log_interval_ms` | `5000` | Sampled diagnostic logs; minimum 250 ms. |
 
-Keep the measured board reference delay; the Waveshare example uses seven
-samples. That is a board alignment setting, not a GRU input time offset.
-Validate reference integrity and playback-only false triggers before tuning
-the threshold. Confirmation cannot compensate for a clipped or missing reference.
+Hardware reference samples reach the detector directly from their TDM slot. Validate reference integrity and assistant-only
+false triggers before tuning the threshold. A high threshold can reject normal
+speech, and lowering it can accept residual echo. Threshold tuning alone cannot
+separate overlapping speech/echo scores. The normalizer adapts continuously,
+but threshold and confirmation settings do not auto-tune.
 
 ## Capture gate and assistant integration
 
@@ -90,8 +91,14 @@ idle and error. These calls are idempotent; repeat flush notifications must
 not truncate an utterance already in progress.
 
 While the capture gate is armed, confirmed VAD opens delivery with retained
-history, followed by live speech and trailing audio. Rejected echo positions
-are replaced with silence in the gated stream. The AEC itself keeps adapting.
+512 ms pre-roll, followed by continuous cleaned PCM through a one-second
+hangover renewed by each confirmed frame. Rejected positions before opening
+are masked; weak words during the open hangover are retained. Playback resuming
+after at least 300 ms of reference silence clears the inherited hangover before
+processing the new frame. Already queued user audio survives; fresh confirmed
+speech can reopen delivery. Short playback gaps do not cancel it. AEC continues
+adapting. Residual echo can still pass during the bounded open interval, so test
+assistant-only playback as well as complete interruption questions.
 An assistant integration must also manage upload capacity, response cancellation,
 queue flushes, completion and error cleanup. The component offers
 `set_delivery_condition(...)`, `request_pre_roll()`, `begin_pre_roll_replay()`
@@ -153,3 +160,83 @@ intended volume. `NEURAL_BARGE` logs active scope, probability, confirmation,
 events and CPU budget; `NEURAL_FEATURES` logs context, resets and normalization.
 The current model was exercised on ESP32-P4; measure resource usage before
 enabling it on other targets.
+
+## Optional bundled voice-assistant engine
+
+Load both components from the same unreleased source when using the custom
+full-duplex engine:
+
+```yaml
+external_components:
+  - source:
+      type: git
+      url: https://github.com/matt123p/esphome-aec
+      ref: main
+      path: src/esphome
+    components: [aec_speexdsp, voice_assistant]
+    refresh: 0s
+```
+
+The ordinary example keeps its standard one-request lifecycle. Loading the
+optional engine alone does not enable barge-in or install capture callbacks.
+For full duplex, set `voice_assistant.barge_in: true` and connect the capture gate:
+
+```yaml
+esphome:
+  on_boot:
+    priority: -90
+    then:
+      - lambda: |-
+          id(voice_assistant_engine).set_barge_in_capture_gate(true);
+          id(voice_assistant_engine).set_barge_in_audio_condition([]() {
+            return id(voice_microphone).is_near_end_speech();
+          });
+          id(voice_microphone).set_delivery_condition([](size_t bytes) {
+            return id(voice_assistant_engine).can_accept_microphone_bytes(bytes);
+          });
+voice_assistant:
+  barge_in: true
+  on_tts_start:
+    - lambda: |-
+        if (id(voice_microphone).set_barge_in_active(true))
+          id(voice_assistant_engine).reset_microphone_upload();
+  on_tts_stream_start:
+    - lambda: |-
+        if (id(voice_microphone).set_barge_in_active(true))
+          id(voice_assistant_engine).reset_microphone_upload();
+  on_listening:
+    - lambda: id(voice_microphone).set_barge_in_active(false);
+  on_tts_stream_end:
+    - lambda: id(voice_microphone).set_barge_in_active(false);
+  on_error:
+    - lambda: |-
+        id(voice_microphone).set_barge_in_active(false);
+        id(voice_microphone).discard_pending_audio();
+  on_idle:
+    - lambda: |-
+        id(voice_microphone).set_barge_in_active(false);
+        id(voice_microphone).discard_pending_audio();
+```
+
+Merge these callbacks into your lifecycle rather than enabling the example's
+response-muting policy at the same time. Use continuous conversation startup
+and a state-aware idle/response watchdog when the provider supports it. Keep
+wake-word pre-roll handoff and listening release in your integration.
+
+Gemini/provider interruption is authoritative: the detector releases microphone
+audio, and Core's flush-marked TTS stream start purges queued playback while
+preserving user capture. Assist RUN_END can precede TTS playback completion;
+the engine waits for stream end and speaker drain before starting the next
+pipeline with the same conversation ID.
+
+The engine retains and retries refused microphone packets. After two seconds
+of sustained backpressure it stops and retires the API connection. A failed
+stop packet also retires it. Startup acknowledgements have a ten-second limit;
+failure stops capture and reconnects rather than waiting indefinitely. Late PCM
+and TTS events during idle/startup/stopping are ignored. These are recovery
+measures, not evidence that network or provider stalls have been eliminated.
+
+`NEURAL_BARGE` reports `candidate_frames` and `confirmed_frames` alongside
+`infer_frames` for each diagnostic window. Compare acceptance duration, not just
+event counts. A flush while the user is silent is a false interruption; neither
+packet delivery nor a successful host test proves intelligible acoustic input.

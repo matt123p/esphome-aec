@@ -184,14 +184,6 @@ aec_speexdsp:
   # Options: 0 - 3. Waveshare 7B: slot 1.
   reference_slot: 1
 
-  # Extra delay applied to the reference, in samples (16 samples = 1 ms at
-  # 16 kHz). Options: 0 - 4000 for a playback reference, 0 - 256 for an
-  # analog slot reference. The analog reference arrives synchronously in the
-  # TDM frame; a small value here compensates the residual group delay of the
-  # amp/loopback path (7 samples was measured on this board). SpeexDSP also
-  # adapts over a range of delays itself, so this only needs to be roughly
-  # right - get it inside a few ms and the filter converges.
-  reference_delay_samples: 7
 
   # Which two TX slots the DAC consumes. Options: any two distinct slots
   # 0 - 3. Mono playback is duplicated to both; stereo maps L/R.

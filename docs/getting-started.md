@@ -153,7 +153,6 @@ aec_speexdsp:
   microphone_slots: [0, 2]
   reference_source: analog_slot
   reference_slot: 1
-  reference_delay_samples: 7
   tx_slots: [0, 1]
   frame_size: 256
   # The component default is 2048; this full workload uses 1024 for headroom.

@@ -40,6 +40,11 @@ extern "C" void speex_preprocess_profile_get(unsigned long long cycles[6], unsig
 
 static const char *const TAG = "aec_speexdsp";
 static constexpr uint32_t AUDIO_TASK_STACK_BYTES = 8192;
+// Reference alignment near-end veto: the microphone may carry at most this
+// multiple of the reference RMS while alignment runs. Echo-dominated playback
+// measures around 2-3x on this hardware; near-end speech without meaningful
+// playback exceeds 10x and yields correlation peaks unrelated to the echo
+// path, so those frames must not feed the tracker.
 // Sized for two seconds of stereo PCM (four seconds for the mono Assist
 // stream). Long live-model replies can arrive with multi-second gaps followed
 // by large bursts, so the previous one-second stereo reserve was too small.
@@ -130,20 +135,6 @@ void AECSpeexDspComponent::setup() {
     ESP_LOGI(TAG, "Playback digital gain: %.1f dB (%.3fx) — keeps amp/reference loopback out of clipping",
              this->playback_gain_db_, this->playback_gain_);
   }
-
-  if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT && this->reference_delay_samples_ > 0) {
-    if (this->reference_delay_samples_ > REFERENCE_DELAY_MAX_SAMPLES) {
-      ESP_LOGW(TAG, "reference_delay_samples %u exceeds the analog-slot maximum %d; clamping",
-               static_cast<unsigned>(this->reference_delay_samples_), REFERENCE_DELAY_MAX_SAMPLES);
-      this->reference_delay_samples_ = REFERENCE_DELAY_MAX_SAMPLES;
-    }
-    // RAM-only runtime delay: applied every frame from the audio task.
-    this->reference_delay_.store(this->reference_delay_samples_);
-    ESP_LOGI(TAG, "Analog reference delay: %u samples (%" PRIu32 " ms)",
-             static_cast<unsigned>(this->reference_delay_samples_),
-             static_cast<uint32_t>(this->reference_delay_samples_) * 1000 / SAMPLE_RATE);
-  }
-  this->reference_delay_tracker_.configure(this->reference_delay_samples_, REFERENCE_DELAY_MAX_SAMPLES);
 
   // Capture buffer in PSRAM: CAPTURE_SECONDS * 16000 samples * 2 bytes
   this->capture_buffer_ = static_cast<int16_t *>(
@@ -572,6 +563,8 @@ void AECSpeexDspComponent::run_audio_task_() {
   // Edge tracking for diagnostic capture event markers.
 #ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
   uint64_t neural_time_us = 0; uint32_t neural_frames = 0, neural_peak_us = 0, neural_last_log = millis();
+  float neural_prob_min = INFINITY, neural_prob_max = 0.f, neural_prob_sum = 0.f; uint32_t neural_prob_frames = 0;
+  uint32_t neural_candidate_frames = 0, neural_confirmed_frames = 0;
 #endif
   bool diag_prev_reference_active = false;
   while (true) {
@@ -579,7 +572,6 @@ void AECSpeexDspComponent::run_audio_task_() {
     esp_err_t err = i2s_channel_read(this->rx_handle_, raw, raw_bytes, &bytes_read, 100);
     if (err != ESP_OK || bytes_read != raw_bytes) {
       this->rx_errors_++;
-      this->reference_delay_tracker_.invalidate();
 #ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
       this->neural_barge_->reset(); this->neural_probability_.store(0);
 #endif
@@ -637,24 +629,6 @@ void AECSpeexDspComponent::run_audio_task_() {
       }
     }
 
-    if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT && this->auto_reference_alignment_) {
-      const int64_t alignment_started = esp_timer_get_time();
-      uint64_t alignment_reference_energy = 0;
-      for (size_t i = 0; i < frame_size; ++i) {
-        const int32_t value = ref[i];
-        alignment_reference_energy += static_cast<uint64_t>(value * value);
-      }
-      const float alignment_reference_rms = std::sqrt(static_cast<float>(alignment_reference_energy) / frame_size);
-      const size_t mic_stride = this->beamforming_enabled_ ? channels : 1;
-      const auto estimate = this->reference_delay_tracker_.process(
-          mic, mic_stride, ref, frame_size, this->reference_tracker_.is_excited(alignment_reference_rms));
-      if (estimate.updated && estimate.valid)
-        this->reference_delay_.store(estimate.delay_samples);
-      const uint32_t alignment_us = static_cast<uint32_t>(esp_timer_get_time() - alignment_started);
-      this->reference_alignment_peak_us_.store(std::max(this->reference_alignment_peak_us_.load(), alignment_us));
-    }
-    if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT)
-      this->apply_reference_delay_(ref, frame_size);
     uint64_t reference_sum_sq = 0;
     int32_t reference_peak = 0;
     for (size_t frame = 0; frame < frame_size; frame++) {
@@ -696,6 +670,8 @@ void AECSpeexDspComponent::run_audio_task_() {
       this->neural_enabled_ = requested_neural_enabled;
       this->neural_barge_->set_enabled(requested_neural_enabled);
       neural_time_us = 0; neural_frames = neural_peak_us = 0; neural_last_log = millis();
+      neural_prob_min = INFINITY; neural_prob_max = neural_prob_sum = 0.f; neural_prob_frames = 0;
+      neural_candidate_frames = neural_confirmed_frames = 0;
     }
     const int64_t neural_start = esp_timer_get_time();
     if (this->neural_reset_requested_.exchange(false)) this->neural_barge_->reset();
@@ -706,16 +682,32 @@ void AECSpeexDspComponent::run_audio_task_() {
         neural_valid, this->neural_threshold_, this->neural_confirmation_,
         this->neural_barge_active_) : NeuralBargeIn::Result{};
     this->neural_probability_.store(neural.probability);
+    // Only frames where the GRU actually inferred (playback + VA active + context
+    // full) carry a meaningful probability; idle frames report 0 and would skew
+    // the min/avg used for threshold calibration.
+    if (neural.ready && this->neural_barge_active_) {
+      neural_prob_min = std::min(neural_prob_min, neural.probability);
+      neural_prob_max = std::max(neural_prob_max, neural.probability);
+      neural_prob_sum += neural.probability; ++neural_prob_frames;
+      neural_candidate_frames += neural.candidate;
+      neural_confirmed_frames += neural.confirmed;
+    }
     if (this->neural_controls_audio_()) this->near_end_probability_.store(neural.probability);
     else if (!this->legacy_near_end_enabled_()) this->near_end_probability_.store(0.f);
     const uint32_t neural_us = esp_timer_get_time() - neural_start;
     neural_time_us += neural_us; ++neural_frames; neural_peak_us = std::max(neural_peak_us, neural_us);
     if (neural.event) { this->neural_events_.fetch_add(1); this->diag_record_event_("NEURAL_BARGE"); }
     if (millis() - neural_last_log >= this->neural_log_ms_) {
-      ESP_LOGI(TAG, "NEURAL_BARGE enabled=%s active=%s p=%.5f ready=%s candidate=%s confirmed=%s events=%" PRIu32
+      ESP_LOGI(TAG, "NEURAL_BARGE enabled=%s active=%s p=%.5f min=%.5f avg=%.5f max=%.5f infer_frames=%" PRIu32
+                    " ready=%s candidate=%s confirmed=%s events=%" PRIu32
+                    " candidate_frames=%" PRIu32 " confirmed_frames=%" PRIu32
                     " avg_us=%" PRIu64 " peak_us=%" PRIu32 " core_budget=%.2f%%",
-          YESNO(this->neural_enabled_), YESNO(this->neural_barge_active_), neural.probability, YESNO(neural.ready), YESNO(neural.candidate),
-          YESNO(neural.confirmed), this->neural_events_.load(), neural_time_us/neural_frames, neural_peak_us,
+          YESNO(this->neural_enabled_), YESNO(this->neural_barge_active_), neural.probability,
+          neural_prob_frames ? neural_prob_min : 0.f,
+          neural_prob_frames ? neural_prob_sum / neural_prob_frames : 0.f, neural_prob_max, neural_prob_frames,
+          YESNO(neural.ready), YESNO(neural.candidate),
+          YESNO(neural.confirmed), this->neural_events_.load(), neural_candidate_frames, neural_confirmed_frames,
+          neural_time_us/neural_frames, neural_peak_us,
           100.f*neural_time_us/neural_frames/frame_budget_us);
       const float *features = this->neural_barge_->features();
       float bark_mean[3]{}, spatial_abs_mean = 0, variance_min = INFINITY, variance_max = 0;
@@ -732,6 +724,8 @@ void AECSpeexDspComponent::run_audio_task_() {
           this->neural_barge_->consecutive_frames(), this->neural_barge_->context_frames(), this->neural_barge_->resets(),
           bark_mean[0], bark_mean[1], bark_mean[2], spatial_abs_mean, variance_min, variance_max);
       neural_time_us=0; neural_frames=neural_peak_us=0; neural_last_log=millis();
+      neural_prob_min = INFINITY; neural_prob_max = neural_prob_sum = 0.f; neural_prob_frames = 0;
+      neural_candidate_frames = neural_confirmed_frames = 0;
     }
     float neural_protect = this->neural_protection_ && this->neural_controls_audio_() ? neural.probability : 0.f;
     for (auto *pre : this->preprocess_state_)
@@ -1348,31 +1342,23 @@ void AECSpeexDspComponent::run_playback_task_() {
   }
 }
 
-void AECSpeexDspComponent::apply_reference_delay_(int16_t *ref, size_t frames) {
-  // Delays only the analogue reference, never the microphone or playback.
-  // The history keeps running even when the delay is 0; zero delay is a
-  // pass-through.
-  const int d = this->reference_delay_.load();
-  constexpr int size = REFERENCE_DELAY_MAX_SAMPLES + 1;
-  for (size_t i = 0; i < frames; ++i) {
-    this->reference_history_[this->reference_history_pos_] = ref[i];
-    if (d > 0)
-      ref[i] = this->reference_history_[(this->reference_history_pos_ + size - d) % size];
-    this->reference_history_pos_ = (this->reference_history_pos_ + 1) % size;
-  }
-}
-
 void AECSpeexDspComponent::publish_frame_(const int16_t *mono, size_t frames) {
   if (this->microphone_ == nullptr)
     return;
   // Neural masking is restricted to playback during an active assistant.
   // Outside that scope the processed PCM reaches WakeNet unchanged.
-  const bool echo_rejected = this->neural_controls_audio_()
-                                 ? this->neural_reference_active_ && !this->near_end_speech_
-                                 : this->legacy_near_end_enabled_() && this->near_end_detector_.reference_active() &&
-                                       !this->near_end_detector_.candidate();
+  bool echo_rejected = this->legacy_near_end_enabled_() && this->near_end_detector_.reference_active() &&
+                       !this->near_end_detector_.candidate();
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  // Preserve onset candidates in history before confirmation opens the FIFO.
+  // Confirmation controls delivery; it must not erase its own pre-roll.
+  if (this->neural_controls_audio_())
+    echo_rejected = this->neural_reference_active_ && !this->neural_barge_->result().candidate;
+#endif
   this->microphone_->publish(reinterpret_cast<const uint8_t *>(mono), frames * sizeof(int16_t),
-                            this->vad_state_.load(), echo_rejected);
+                            this->vad_state_.load(), echo_rejected,
+                            this->neural_reference_active_ ||
+                                (this->legacy_near_end_enabled_() && this->near_end_detector_.reference_active()));
 }
 
 void AECSpeexDspComponent::capture_frame_(const int16_t *mono, size_t frames) {
@@ -2266,6 +2252,8 @@ bool AECSpeexDspMicrophone::set_barge_in_active(bool active) {
   if (changed) {
     this->barge_in_active_ = active;
     this->speech_until_byte_ = 0;
+    this->playback_active_ = false;
+    this->playback_silence_bytes_ = 0;
     if (active) {
       this->utterance_active_ = true;
       this->buffered_bytes_ = 0;
@@ -2279,12 +2267,31 @@ bool AECSpeexDspMicrophone::set_barge_in_active(bool active) {
   return changed;
 }
 
-void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size, bool near_end, bool echo_rejected) {
+void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size, bool near_end, bool echo_rejected,
+                                 bool playback_active) {
   this->near_end_speech_.store(near_end);
   if (this->buffer_ == nullptr || this->buffer_mutex_ == nullptr)
     return;
   xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
   this->captured_bytes_ += data_size;
+  if (this->barge_in_active_) {
+    constexpr size_t RESTART_SILENCE_BYTES = SAMPLE_RATE * sizeof(int16_t) * 300 / 1000;
+    if (playback_active) {
+      if (!this->playback_active_ && this->playback_silence_bytes_ >= RESTART_SILENCE_BYTES) {
+        // A replacement reply must not inherit the preceding utterance's tail.
+        // Keep queued speech; fresh confirmation below can reopen capture.
+        this->speech_until_byte_ = 0;
+        ESP_LOGD(TAG, "Capture hangover cancelled: playback resumed after silence");
+      }
+      this->playback_silence_bytes_ = 0;
+    } else {
+      this->playback_silence_bytes_ = std::min(RESTART_SILENCE_BYTES,
+                                             this->playback_silence_bytes_ + data_size);
+    }
+    this->playback_active_ = playback_active;
+  }
+  const bool was_open = this->barge_in_active_ &&
+                        this->captured_bytes_ - data_size < this->speech_until_byte_;
   // AEC can leave residual TTS. Exclude response audio and a 300 ms acoustic
   // tail from BOTH live delivery and history, including short responses.
   if (this->response_playing_ || (this->response_tail_ && millis() - this->response_end_ms_ < 300)) {
@@ -2297,10 +2304,9 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size,
   const size_t history_count = std::min(data_size, HISTORY_BYTES);
   const uint8_t *history_data = data + data_size - history_count;
   const size_t history_first = std::min(history_count, HISTORY_BYTES - this->history_write_offset_);
-  // Opening a gate must not replay the preceding half-second of rejected TTS
-  // echo. Preserve candidate onset frames while confirmation is accumulating;
-  // use silence at echo-only positions, keeping the capture timeline intact.
-  if (this->barge_in_active_ && echo_rejected && !near_end) {
+  // Mask rejected pre-roll before the gate opens. Once speech is confirmed,
+  // retain continuous cleaned PCM through the hangover, including weak words.
+  if (this->barge_in_active_ && !was_open && echo_rejected && !near_end) {
     memset(this->buffer_ + BUFFER_BYTES + this->history_write_offset_, 0, history_first);
     memset(this->buffer_ + BUFFER_BYTES, 0, history_count - history_first);
   } else {
@@ -2316,7 +2322,6 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size,
   if (this->barge_in_active_) {
     // Decisions and hangover use capture positions, not main-loop wall time.
     // Keep 1 s of trailing audio for remote endpointing (plus detector release).
-    const bool was_open = this->captured_bytes_ - data_size < this->speech_until_byte_;
     if (near_end) this->speech_until_byte_ = this->captured_bytes_ + SAMPLE_RATE * sizeof(int16_t);
     if (!near_end && !was_open) {
       xSemaphoreGive(this->buffer_mutex_);
@@ -2358,15 +2363,9 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size,
       this->queue_start_byte_ = this->captured_bytes_ - data_size;
     const size_t write_offset = (this->read_offset_ + this->buffered_bytes_) % BUFFER_BYTES;
     const size_t first = std::min(data_size, BUFFER_BYTES - write_offset);
-    // Keep endpointing silence after confirmed speech, not intelligible echo
-    // that would make the provider interrupt its replacement response again.
-    if (this->barge_in_active_ && echo_rejected && !near_end) {
-      memset(this->buffer_ + write_offset, 0, first);
-      memset(this->buffer_, 0, data_size - first);
-    } else {
-      memcpy(this->buffer_ + write_offset, data, first);
-      memcpy(this->buffer_, data + first, data_size - first);
-    }
+    // The gate above bounds delivery; frame rejection must not chop an utterance.
+    memcpy(this->buffer_ + write_offset, data, first);
+    memcpy(this->buffer_, data + first, data_size - first);
     this->buffered_bytes_ += data_size;
   } else {
     this->dropped_bytes_.fetch_add(data_size);

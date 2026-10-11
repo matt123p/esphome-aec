@@ -30,10 +30,16 @@ class NeuralBargeConfigTests(unittest.TestCase):
         config=dict(vad=True,output_channel='first',beamforming={'enabled':False},
                     agc={'enabled':True,'gate':{'enabled':False,'open_rms':64,'close_rms':32}},
                     tdm_slots=4,microphone_slots=[0,1],reference_slot=2,tx_slots=[0,1],
-                    reference_source='analog_slot',reference_delay_samples=0,frame_size=256,
+                    reference_source='analog_slot',frame_size=256,
                     filter_length=2048,capture_only=False,
                     neural_barge_in={'enabled':True,'voice_assistant_active':'return true;'})
         validate(copy.deepcopy(config))
+        for delay in (0, 7):
+            hardware_delay=copy.deepcopy(config);hardware_delay['reference_delay_samples']=delay
+            with self.subTest(hardware_delay=delay),self.assertRaises(ValueError):validate(hardware_delay)
+        playback_delay=copy.deepcopy(config);playback_delay['reference_source']='playback'
+        playback_delay['reference_delay_samples']=7
+        validate(playback_delay)
         for change in [dict(frame_size=128),dict(microphone_slots=[0]),dict(capture_only=True),
                        dict(vad=False),dict(output_channel='mixed')]:
             invalid=copy.deepcopy(config);invalid.update(change)

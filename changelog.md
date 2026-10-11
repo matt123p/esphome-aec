@@ -6,14 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased - 2026-10-11
 
-### Added
+### Fixed
 
-- Opt-in optimized analogue-reference alignment: exhaustive 0–256 sample
-  acquisition spread across frames, then ±8-sample tracking. Work is capped
-  at eight lag candidates per audio frame; weak/edge peaks and periodic refresh
-  reacquire globally. Quiet reference and capture errors invalidate pending work.
-- Applied reference-delay and peak alignment-time getters, a usage/timing guide,
-  and sanitizer-backed acquisition/tracking/recovery tests.
+- Neural onset candidates are retained until confirmation opens microphone
+  delivery, instead of being erased from pre-roll.
+- One-second capture hangover forwards continuous cleaned speech, preserving
+  weak words; playback resumption after 300 ms of reference silence cancels the
+  inherited tail without discarding queued user audio.
+- Neural diagnostics include candidate and confirmed frame counts.
+- Optional bundled voice-assistant engine retires the API connection after two
+  seconds of microphone backpressure or a failed stop packet, rejects late
+  response audio/TTS events during startup or idle, limits pipeline startup to
+  ten seconds, and stops capture when a start request cannot be sent.
+
+### Reference handling
+
+- Hardware reference samples pass directly from the configured TDM slot to
+  AEC, diagnostics and the neural detector.
+- `reference_delay_samples` applies only to a software playback reference.
+
+### Added
 
 - Optional raw84 Dense32/GRU24 barge-in detector trained on captured data
   from the Waveshare 7B board using corrected acoustic labels. The model has

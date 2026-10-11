@@ -94,7 +94,10 @@ DAC and reference tap. The Waveshare 7B examples use `-12` dB because its
 hardware loopback clips when the DAC is driven close to full scale. Re-test the
 speaker and raw reference at the loudest intended setting after changing it.
 
-## 5. Align the reference
+## 5. Reference timing
+
+Hardware `analog_slot` references pass directly to AEC. The delay tuning below
+applies only to a software playback reference.
 
 With `reference_source: playback`, the reference must line up with the echo at
 the microphones. `reference_delay_samples` pre-fills the reference ring buffer
@@ -111,14 +114,9 @@ record a raw microphone slot, and cross-correlate the recording with the source
 WAV. Use the correlation peak as the initial delay, then sweep nearby values
 while measuring and listening.
 
-For an analogue reference, delay may be adjusted from 0 to 256 samples (16 ms).
-The analog reference arrives in the same TDM frame as the microphones, so the
-delay only compensates the residual amplifier/loopback group delay — on the
-reference Waveshare 7B this measured 7 samples. To measure it on another board,
-play a repeatable signal, record a raw microphone slot (the capture API or the
-audio-test example both work), and cross-correlate the recording with the
-source signal. SpeexDSP also adapts over a range of delays itself, so the
-configured value only needs to be roughly right.
+For an analogue hardware reference, use the captured slot directly. Verify
+slot mapping, reference clipping and cancellation quality. See
+[reference timing]({{ '/reference-timing/' | relative_url }}) for both sources.
 
 ## 6. Measure cancellation and double-talk
 
@@ -131,17 +129,16 @@ speech is not acceptable full-duplex performance.
 Tune in this order:
 
 1. correct slot mapping and unclipped ADC/DAC levels;
-2. correct reference source, `playback_gain_db`, and
-   `reference_delay_samples` (the capture/play-back API is useful for
-   measuring the delay by cross-correlation);
+2. correct reference source and `playback_gain_db`; for a software playback
+   reference only, measure and tune `reference_delay_samples`;
 3. `noise_suppression_level_db`;
 4. `echo_suppress_db` / `echo_suppress_active_db` — higher values remove more
    residual echo; lower `echo_suppress_active_db` preserves double-talk;
 5. `filter_length` — the main quality knob. The complete Waveshare examples
    start at `1024` for workload headroom; `2048` is the component default. Try
    longer tails only when measurements show they are needed and the DSP/memory
-   budget allows. SpeexDSP's own adaptive delay
-   search means the reference delay only needs to be roughly right;
+   budget allows. The adaptive filter models the causal echo path within that
+   tail; it cannot compensate a reference shifted later than the earliest echo;
 6. `agc.target_level`, then optional meters and resampling.
 
 With the AGC gate enabled, verify its decisions during playback: enable
@@ -188,10 +185,3 @@ lower-cost settings work. For each candidate value:
 If a longer filter is required, first reduce other CPU costs — for example
 spectrum metering, display work, or other optional processing — then repeat the
 full throughput test.
-
-
-## Automatic analogue-reference tracking
-
-After verifying the fixed delay and reference level, see the
-[alignment guide]({{ '/reference-alignment/' | relative_url }}) for opt-in
-bounded acquisition/local tracking and per-frame timing getters.

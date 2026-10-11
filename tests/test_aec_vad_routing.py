@@ -23,6 +23,7 @@ def test_playback_assistant_truth_table_and_transitions(tmp_path):
 #include <cassert>
 #include <cstdint>
 #include <cstddef>
+#include <cmath>
 #include <vector>
 using spx_int32_t = int;
 constexpr int SPEEX_PREPROCESS_SET_NEAR_END_HINT=0, SPEEX_PREPROCESS_SET_NEAR_END_PROTECTION=1,
@@ -36,11 +37,14 @@ struct Resettable { void reset() {} void invalidate() {} bool reference_active()
  bool candidate() const { return false; } };
 struct Detector {
  bool enabled=true; unsigned resets=0;
+ struct Result { bool candidate=false; } current;
+ const Result &result() const { return current; }
  void set_enabled(bool value) { if(value!=enabled) { enabled=value; ++resets; } }
 };
 struct Microphone {
  bool vad=false, rejected=false; size_t bytes=0;
- void publish(const uint8_t *, size_t n, bool v, bool r) { bytes+=n; vad=v; rejected=r; }
+ bool playback=false;
+ void publish(const uint8_t *, size_t n, bool v, bool r, bool p) { bytes+=n; vad=v; rejected=r; playback=p; }
 };
 struct AECSpeexDspComponent {
  Detector detector; Detector *neural_barge_=&detector;
@@ -55,9 +59,11 @@ struct AECSpeexDspComponent {
 '''
     code += 'bool neural_controls_audio_() const {' + controls
     code += 'void publish_frame_(const int16_t *mono, size_t frames);\n'
-    code += 'void frame(bool playing, bool assistant, bool speech_detected, bool confirmed, int diagnostic_raw_slot=-1) {\n'
+    code += 'void frame(bool playing, bool assistant, bool speech_detected, bool confirmed, int diagnostic_raw_slot=-1, bool candidate=false) {\n'
+    code += 'detector.current.candidate=confirmed||candidate;\n'
     code += 'voice_assistant_active_=assistant; struct { bool active; } reference_frame{playing};\n'
     code += 'unsigned neural_time_us=0, neural_frames=0, neural_peak_us=0, neural_last_log=0;\n'
+    code += 'float neural_prob_min=0, neural_prob_max=0, neural_prob_sum=0; unsigned neural_prob_frames=0, neural_candidate_frames=0, neural_confirmed_frames=0;\n'
     code += gate
     code += 'struct { bool confirmed; float probability; } neural{confirmed,.91f};\n' + select
     code += 'int16_t pcm[256]{}; publish_frame_(pcm,256); }\n};\n'
@@ -70,6 +76,7 @@ int main() {
   const bool use_neural=playback&&assistant;
   c.frame(playback,assistant,true,false);
   assert(c.neural_barge_active_==use_neural);
+  assert(c.mic.playback==playback);
   assert(c.vad_state_==!use_neural);
   assert(c.mic.vad==c.vad_state_);
   assert(c.mic.rejected==use_neural);
@@ -79,6 +86,11 @@ int main() {
   assert(c.vad_state_==use_neural);
   assert(!c.mic.rejected);
  }
+ // Candidate onset is retained in history without opening live delivery.
+ c.frame(true,true,false,false,-1,true);
+ assert(!c.mic.vad && !c.mic.rejected);
+ c.frame(true,true,false,false);
+ assert(!c.mic.vad && c.mic.rejected);
  // Scope transitions preserve the normalizer/context; manual disable resets it.
  c.frame(true,true,true,true); auto resets=c.detector.resets;
  c.frame(true,false,false,true); assert(c.detector.resets==resets);
