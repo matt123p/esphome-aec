@@ -23,6 +23,10 @@ probability sensors. Use `ref: main` to try these unreleased features; the
 `v1.00` installation snippet below remains the last tagged release. The bundled
 voice-assistant example intentionally leaves barge-in disabled.
 
+The `main` branch also provides opt-in
+[automatic analogue-reference alignment](docs/reference-alignment.md), using
+bounded acquisition and local tracking to reduce CPU spikes.
+
 ## Why use it?
 
 - **True full-duplex audio** — keep listening for speech while a response,

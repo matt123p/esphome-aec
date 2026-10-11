@@ -29,6 +29,7 @@ class ReferenceTracker {
     remaining_ = samples >= remaining_ ? 0 : remaining_ - samples;
     return result;
   }
+  bool is_excited(float rms) const { return std::isfinite(rms) && rms >= open_; }
  private:
   float open_{200}, close_{100};
   uint32_t tail_{4000}, startup_{3200}, quiet_{0}, remaining_{0};

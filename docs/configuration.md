@@ -7,6 +7,14 @@ title: Configuration Reference
 Start from the [known-good configuration]({{ '/getting-started/' | relative_url }})
 and change one setting at a time.
 
+## Optional automatic reference alignment
+
+For verified analogue-reference hardware, the latest component can acquire a
+delay using a bounded exhaustive scan and then track within a local window.
+It is disabled by default and independent of neural VAD. See
+[automatic reference alignment]({{ '/reference-alignment/' | relative_url }})
+for configuration, timing getters and board validation.
+
 ## Optional GRU barge-in
 
 The latest component can select neural VAD only during playback with an active
@@ -27,6 +35,7 @@ assistant example does not enable this feature.
 | `microphone_slots` | no | `[0, 1]` | One to four distinct RX slots (`0`–`3`). Physical slot numbers are mapped to dense internal channel storage. |
 | `reference_source` | no | `analog_slot` | `analog_slot` reads the loopback from an ADC slot (preferred); `playback` uses a mono copy of accepted speaker PCM. |
 | `reference_slot` | no | `2` | RX slot for the analog reference; must differ from the microphone slots. |
+| `auto_reference_alignment` | no | `false` | Opt-in bounded automatic delay tracking for an analogue reference; see [Reference alignment]({{ '/reference-alignment/' | relative_url }}). The fixed delay seeds it; not used with the software playback reference. |
 | `reference_delay_samples` | no | `0` | `0`–`4000` with `playback`; `0`–`256` with `analog_slot`. 16 samples = 1 ms at 16 kHz. SpeexDSP also adapts over a range of delays itself, so this only needs to be roughly right. |
 | `tx_slots` | no | `[0, 1]` | Two TDM TX slots consumed by the DAC (mono is duplicated; stereo maps L/R). |
 | `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of DSP output; for slot mapping. Also settable at runtime via `set_diagnostic_raw_slot(n)` (`-1` restores DSP output). |

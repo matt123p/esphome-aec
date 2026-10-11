@@ -579,6 +579,7 @@ void AECSpeexDspComponent::run_audio_task_() {
     esp_err_t err = i2s_channel_read(this->rx_handle_, raw, raw_bytes, &bytes_read, 100);
     if (err != ESP_OK || bytes_read != raw_bytes) {
       this->rx_errors_++;
+      this->reference_delay_tracker_.invalidate();
 #ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
       this->neural_barge_->reset(); this->neural_probability_.store(0);
 #endif
@@ -637,10 +638,20 @@ void AECSpeexDspComponent::run_audio_task_() {
     }
 
     if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT && this->auto_reference_alignment_) {
+      const int64_t alignment_started = esp_timer_get_time();
+      uint64_t alignment_reference_energy = 0;
+      for (size_t i = 0; i < frame_size; ++i) {
+        const int32_t value = ref[i];
+        alignment_reference_energy += static_cast<uint64_t>(value * value);
+      }
+      const float alignment_reference_rms = std::sqrt(static_cast<float>(alignment_reference_energy) / frame_size);
       const size_t mic_stride = this->beamforming_enabled_ ? channels : 1;
-      const auto estimate = this->reference_delay_tracker_.process(mic, mic_stride, ref, frame_size, true);
-      if (estimate.valid)
+      const auto estimate = this->reference_delay_tracker_.process(
+          mic, mic_stride, ref, frame_size, this->reference_tracker_.is_excited(alignment_reference_rms));
+      if (estimate.updated && estimate.valid)
         this->reference_delay_.store(estimate.delay_samples);
+      const uint32_t alignment_us = static_cast<uint32_t>(esp_timer_get_time() - alignment_started);
+      this->reference_alignment_peak_us_.store(std::max(this->reference_alignment_peak_us_.load(), alignment_us));
     }
     if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT)
       this->apply_reference_delay_(ref, frame_size);

@@ -174,6 +174,24 @@ the previous stable direction rather than steering on noise.
 
 ## Reference audio
 
+### Optional automatic reference alignment
+
+Set `auto_reference_alignment: true` to opt into analogue-reference delay
+tracking. The configured fixed delay seeds acquisition. A full 0–256 sample
+search is spread across frames (eight candidates maximum per call), followed
+by ±8-sample tracking with automatic exhaustive recovery/periodic refresh.
+Only tracker history capture pauses during a scan; the audio pipeline remains
+continuous. Quiet reference or capture errors discard pending evidence.
+The implementation uses float arithmetic and shared/rolling energy calculations.
+
+See the [reference alignment guide](../../../docs/reference-alignment.md) for
+configuration, acquisition latency, benchmark limits and board validation.
+`get_reference_delay_samples()` exposes the applied delay;
+`get_reference_alignment_peak_us()` exposes peak alignment time per audio frame
+since boot, including excitation measurement. Automatic alignment is disabled
+by default and is independent of GRU barge-in. The standard assistant example
+keeps both options disabled.
+
 ### Optional GRU barge-in detector
 
 Enable `neural_barge_in` only for an assistant integration that can keep its
@@ -529,7 +547,7 @@ queried; they do not add an FFT or change AGC/gating policy.
   available (with an internal-RAM fallback); boards without PSRAM should keep
   `filter_length` modest.
 - Four-slot Philips TDM, 16-bit PCM, and 16 kHz are fixed.
-- Manual reference delay/gain tuning; no automatic calibration (measure the
+- Manual reference gain tuning; optional automatic analogue-reference delay tracking (measure the
   delay with the capture API or the audio-test page).
 
 ## References

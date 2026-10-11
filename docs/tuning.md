@@ -188,3 +188,10 @@ lower-cost settings work. For each candidate value:
 If a longer filter is required, first reduce other CPU costs — for example
 spectrum metering, display work, or other optional processing — then repeat the
 full throughput test.
+
+
+## Automatic analogue-reference tracking
+
+After verifying the fixed delay and reference level, see the
+[alignment guide]({{ '/reference-alignment/' | relative_url }}) for opt-in
+bounded acquisition/local tracking and per-frame timing getters.

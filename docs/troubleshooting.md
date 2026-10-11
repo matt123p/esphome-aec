@@ -70,7 +70,7 @@ section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
   (or combined by the optional post-AEC beamformer, which improves pickup but
   is not source separation).
 - No wake-net (feed the cleaned microphone to ESPHome Micro Wake Word instead).
-- Manual reference delay/gain tuning; no automatic calibration (measure the
+- Manual reference gain tuning; optional automatic analogue-reference delay tracking (measure the
   delay with the capture API or the audio-test page).
 - Four-slot Philips TDM, 16-bit PCM, and 16 kHz are fixed.
 - AEC cannot fully model loudspeaker nonlinearities or rescue clipped signals.

@@ -201,6 +201,8 @@ class AECSpeexDspComponent : public Component {
   }
 #endif
   void set_auto_reference_alignment(bool enabled) { this->auto_reference_alignment_ = enabled; }
+  int get_reference_delay_samples() const { return this->reference_delay_.load(); }
+  uint32_t get_reference_alignment_peak_us() const { return this->reference_alignment_peak_us_.load(); }
   void set_microphone(AECSpeexDspMicrophone *microphone) { this->microphone_ = microphone; }
   void set_speaker(AECSpeexDspSpeaker *speaker) { this->speaker_ = speaker; }
   void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
@@ -397,6 +399,7 @@ class AECSpeexDspComponent : public Component {
   // Runtime analog-reference delay in RAM (no persistence). Seeded from
   // reference_delay_samples_ at setup.
   std::atomic<int> reference_delay_{0};
+  std::atomic<uint32_t> reference_alignment_peak_us_{0};
   int16_t reference_history_[REFERENCE_DELAY_MAX_SAMPLES + 1]{};
   size_t reference_history_pos_{0};
   std::atomic<bool> vad_state_{false};
