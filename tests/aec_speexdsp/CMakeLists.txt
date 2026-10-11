@@ -146,3 +146,15 @@ if(SANITIZE)
 else()
     target_compile_options(aec_dsp_tests PRIVATE -O2 -g)
 endif()
+
+
+# Optional model/preprocessor probe for inference parity checks.
+add_executable(neural_barge_probe tests/neural_barge_probe.cpp)
+target_include_directories(neural_barge_probe PRIVATE ${COMPONENT_DIR})
+target_link_libraries(neural_barge_probe PRIVATE speexdsp_pc pc_mem)
+if(SANITIZE)
+    target_compile_options(neural_barge_probe PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+    target_link_options(neural_barge_probe PRIVATE -fsanitize=address,undefined)
+else()
+    target_compile_options(neural_barge_probe PRIVATE -O2)
+endif()

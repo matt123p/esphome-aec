@@ -48,3 +48,22 @@ Set `PYTHON=/path/to/python` to choose the Python interpreter, `BUILD_DIR` to
 choose the build location. Test logs land in `build/out/`.
 
 `test_data/` and `build/` are generated and not tracked in git.
+
+
+## Neural VAD and microphone integration checks
+
+From the repository root, install `pytest` and run:
+
+```bash
+python3 -m pytest -q tests/test_neural_barge_config.py tests/test_aec_vad_routing.py tests/test_aec_microphone.py
+```
+
+These host tests compile the production routing/microphone code with minimal
+platform stubs, checking playback/assistant selection, independent probabilities,
+percentage sensors, confirmation scope and retained microphone delivery.
+The DSP build also creates `neural_barge_probe`, including neural Speex speech
+protection checks. Full PyTorch parity requires the raw84 training
+checkpoint/extractor; those datasets are not bundled here. The port was checked
+against that checkpoint during port validation. Keep the model
+header, metadata and fitted normalizer/spatial state together when exporting
+another checkpoint.

@@ -5,7 +5,7 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B, built on the recommended
 `aec_speexdsp` component.
 
 - local Micro Wake Word detection using “Alexa”;
-- continuous Home Assistant voice-assistant conversations;
+- one-request Home Assistant voice-assistant sessions (wake again for another request);
 - rolling pre-buffer hand-off between wake-word and STT listeners;
 - suppression of response audio and its acoustic tail from microphone history;
 - listening, thinking, replying, idle, and error states;
@@ -34,6 +34,15 @@ The gate never mutes audio, and the AEC keeps adapting throughout. See the
 [configuration reference](https://matt123p.github.io/esphome-aec/configuration/#reference-aware-agc-gate)
 for the thresholds and timings.
 
+## Barge-in is disabled in this example
+
+The example uses the standard `voice_assistant.start` lifecycle and suppresses
+microphone delivery during TTS. It does not configure `neural_barge_in`, arm a
+barge-in capture gate, or import a custom voice-assistant engine. AEC and ordinary
+SpeexDSP VAD remain available for wake-word and request audio. See the
+[optional GRU guide](../../docs/neural-barge-in.md) for a separate full-duplex
+integration; it is not enabled by this example.
+
 ## Use it
 
 1. Copy `secrets.yaml.example` to `secrets.yaml` and enter your Wi-Fi details.
@@ -42,7 +51,7 @@ for the thresholds and timings.
 3. Add the device to Home Assistant and allow it to use a configured Assist
    pipeline.
 4. Say “Alexa” or tap **Start**. The screen shows the state, transcript, and
-   response. Tap **Stop** to end continuous mode and re-arm the wake word.
+   response. Tap **Stop** to end the request and re-arm the wake word.
 
 Run the sibling [audio-test example](../waveshare-7b-audio-test/) first if this
 is a new board. Voice-assistant behavior cannot compensate for incorrect TDM

@@ -1,6 +1,6 @@
 # AEC Audio for ESPHome
 
-**Version v1.00** — see the [changelog](changelog.md#v100---2026-09-20) for release notes.
+**Latest release: v1.00** — see the [changelog](changelog.md#v100---2026-09-20) for release notes.
 
 Talk to your ESPHome voice assistant while it is talking back.
 
@@ -16,6 +16,12 @@ filter can run with significantly long tails (up to 16,384 samples, about
 one second of echo path), providing significantly better echo suppression in
 reflective rooms. It is plain C that builds for every ESP32 variant with an
 FPU, with no closed-source binaries.
+
+The current `main` branch also includes optional
+[GRU barge-in detection](docs/neural-barge-in.md) and independent SpeexDSP/GRU
+probability sensors. Use `ref: main` to try these unreleased features; the
+`v1.00` installation snippet below remains the last tagged release. The bundled
+voice-assistant example intentionally leaves barge-in disabled.
 
 ## Why use it?
 

@@ -10,6 +10,18 @@
 #include <esp_heap_caps.h>
 #include <esp_cpu.h>
 #include <esp_timer.h>
+#include <esp_log.h>
+#include <esp_rom_sys.h>
+#include <soc/soc_caps.h>
+#if SOC_USB_SERIAL_JTAG_SUPPORTED
+#include <driver/usb_serial_jtag.h>
+#endif
+
+#include "esphome/core/hal.h"
+#include "esphome/core/log.h"
+#include "esphome/core/version.h"
+#include "esphome/core/application.h"
+#include "esphome/components/logger/logger.h"
 
 #include "fftwrap.h"
 
@@ -27,6 +39,7 @@ extern "C" size_t speexdsp_mem_psram_bytes(void);
 extern "C" void speex_preprocess_profile_get(unsigned long long cycles[6], unsigned int *calls);
 
 static const char *const TAG = "aec_speexdsp";
+static constexpr uint32_t AUDIO_TASK_STACK_BYTES = 8192;
 // Sized for two seconds of stereo PCM (four seconds for the mono Assist
 // stream). Long live-model replies can arrive with multi-second gaps followed
 // by large bursts, so the previous one-second stereo reserve was too small.
@@ -68,6 +81,12 @@ uint8_t AECSpeexDspComponent::processed_channels_() const {
 
 void AECSpeexDspComponent::setup() {
   global_aec_speexdsp = this;
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  this->neural_barge_ = std::make_unique<NeuralBargeIn>();
+  if (this->frame_size_ != 256 || this->microphone_slots_.size() != 2 || !this->neural_barge_->init()) {
+    ESP_LOGE(TAG, "Neural barge-in initialization failed"); this->mark_failed(); return;
+  }
+#endif
 
   std::unique_ptr<ring_buffer::RingBuffer> buffer =
       ring_buffer::RingBuffer::create(SAMPLE_RATE * 2 * 2 * PLAYBACK_BUFFER_MS / 1000);
@@ -124,6 +143,7 @@ void AECSpeexDspComponent::setup() {
              static_cast<unsigned>(this->reference_delay_samples_),
              static_cast<uint32_t>(this->reference_delay_samples_) * 1000 / SAMPLE_RATE);
   }
+  this->reference_delay_tracker_.configure(this->reference_delay_samples_, REFERENCE_DELAY_MAX_SAMPLES);
 
   // Capture buffer in PSRAM: CAPTURE_SECONDS * 16000 samples * 2 bytes
   this->capture_buffer_ = static_cast<int16_t *>(
@@ -163,14 +183,34 @@ void AECSpeexDspComponent::setup() {
   // Priority 4 on core 0 keeps the DSP below the WiFi/API work that shares the
   // core; I2S DMA absorbs the brief scheduling delay. Over-budget frames yield
   // explicitly (see run_audio_task_).
-  if (xTaskCreatePinnedToCore(AECSpeexDspComponent::audio_task, "speexdsp_audio", 8192, this, 4,
+  if (xTaskCreatePinnedToCore(AECSpeexDspComponent::audio_task, "speexdsp_audio", AUDIO_TASK_STACK_BYTES, this, 4,
                               &this->audio_task_handle_, 0) != pdPASS) {
     ESP_LOGE(TAG, "Could not start audio task");
     this->mark_failed();
   }
+
+  // Host control channel over the USB Serial/JTAG console. The logger already
+  // installed the driver; this task only reads RX and writes framed responses.
+#if SOC_USB_SERIAL_JTAG_SUPPORTED
+  if (this->serial_control_enabled_) {
+    this->diag_mutex_ = xSemaphoreCreateMutex();
+    if (this->diag_mutex_ == nullptr ||
+        xTaskCreatePinnedToCore(AECSpeexDspComponent::serial_task, "aec_serial_ctl", 6144, this, 2,
+                                &this->serial_task_handle_, playback_core) != pdPASS) {
+      ESP_LOGE(TAG, "Could not start serial control task");
+    }
+  }
+#else
+  if (this->serial_control_enabled_)
+    ESP_LOGE(TAG, "serial_control requires a SoC with USB Serial/JTAG");
+#endif
 }
 
 void AECSpeexDspComponent::dump_config() {
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  ESP_LOGCONFIG(TAG, "Neural barge-in: threshold=%.6f confirmation=%u protect=%s model=%s",
+                neural_threshold_, neural_confirmation_, YESNO(neural_protection_), barge_model::checksum);
+#endif
   const uint8_t second_slot =
       this->microphone_slots_.size() > 1 ? this->microphone_slots_[1] : this->tdm_slots_;
   ESP_LOGCONFIG(TAG,
@@ -205,6 +245,10 @@ void AECSpeexDspComponent::dump_config() {
 }
 
 void AECSpeexDspComponent::loop() {
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  this->voice_assistant_active_.store(this->voice_assistant_active_condition_ &&
+                                      this->voice_assistant_active_condition_());
+#endif
   if (millis() - this->last_input_rate_log_ >= INPUT_RATE_LOG_INTERVAL_MS) {
     const uint32_t now = millis();
     const size_t requested_bytes = this->play_requested_bytes_.load();
@@ -329,6 +373,7 @@ bool AECSpeexDspComponent::start_i2s_() {
 
 bool AECSpeexDspComponent::start_dsp_() {
   const int frame = this->frame_size_;
+  this->soft_double_talk_.configure(this->echo_suppress_db_, this->echo_suppress_active_db_);
   const int filter = this->filter_length_;
 
   // Processed-channel mapping: state index -> microphone slot. The primary
@@ -384,6 +429,8 @@ bool AECSpeexDspComponent::start_dsp_() {
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &noise_db);
 
     int agc = this->agc_enabled_ ? 1 : 0;
+    int meter = this->near_end_enabled_ ? 1 : 0;
+    speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_PRE_AGC_METER, &meter);
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC_GATE, &this->agc_gate_config_);
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_AGC, &agc);
     if (this->agc_enabled_) {
@@ -399,6 +446,8 @@ bool AECSpeexDspComponent::start_dsp_() {
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, &echo_db);
     int echo_active_db = this->echo_suppress_active_db_;
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, &echo_active_db);
+    int near_end_protection = this->soft_double_talk_enabled_ && this->legacy_near_end_enabled_() ? 1 : 0;
+    speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_NEAR_END_PROTECTION, &near_end_protection);
 
     int vad = this->vad_enabled_ ? 1 : 0;
     speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_VAD, &vad);
@@ -519,11 +568,22 @@ void AECSpeexDspComponent::run_audio_task_() {
   int64_t effect_raw_ref_cross[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
   int64_t effect_out_ref_cross[AdaptiveDelayAndSumBeamformer::MAX_MICROPHONES]{};
 #endif
+  uint32_t quality_last_log = 0;
+  // Edge tracking for diagnostic capture event markers.
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  uint64_t neural_time_us = 0; uint32_t neural_frames = 0, neural_peak_us = 0, neural_last_log = millis();
+#endif
+  bool diag_prev_reference_active = false;
   while (true) {
     size_t bytes_read = 0;
     esp_err_t err = i2s_channel_read(this->rx_handle_, raw, raw_bytes, &bytes_read, 100);
     if (err != ESP_OK || bytes_read != raw_bytes) {
       this->rx_errors_++;
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+      this->neural_barge_->reset(); this->neural_probability_.store(0);
+#endif
+      this->cancellation_quality_.invalidate();  // Do not correlate across missing capture samples.
+      this->near_end_detector_.discard_pending_observation();
       continue;
     }
 
@@ -565,15 +625,23 @@ void AECSpeexDspComponent::run_audio_task_() {
       if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT)
         ref[frame] = raw[frame * this->tdm_slots_ + this->reference_slot_];
     }
+    bool reference_complete = true;
     if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_PLAYBACK) {
       const size_t reference_bytes = frame_size * sizeof(int16_t);
       const size_t reference_read = this->reference_buffer_->read(ref, reference_bytes, pdMS_TO_TICKS(100));
       if (reference_read != reference_bytes) {
+        reference_complete = false;
         std::memset(reinterpret_cast<uint8_t *>(ref) + reference_read, 0, reference_bytes - reference_read);
         this->reference_underruns_++;
       }
     }
 
+    if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT && this->auto_reference_alignment_) {
+      const size_t mic_stride = this->beamforming_enabled_ ? channels : 1;
+      const auto estimate = this->reference_delay_tracker_.process(mic, mic_stride, ref, frame_size, true);
+      if (estimate.valid)
+        this->reference_delay_.store(estimate.delay_samples);
+    }
     if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT)
       this->apply_reference_delay_(ref, frame_size);
     uint64_t reference_sum_sq = 0;
@@ -592,14 +660,103 @@ void AECSpeexDspComponent::run_audio_task_() {
       this->meters_callback_->process_reference(ref, frame_size);
 #endif
 
+    // Diagnostic capture taps the microphone interface directly after the DMA
+    // read and reference alignment: these channels stay complete even if the
+    // canceller later cannot keep up (capture-only mode never can drop them).
+    const auto reference_frame = this->reference_tracker_.process(this->reference_rms_.load(), frame_size);
+    if (reference_frame.active != diag_prev_reference_active) {
+      this->diag_record_event_(reference_frame.active ? "REF_START" : "REF_STOP");
+      diag_prev_reference_active = reference_frame.active;
+    }
+    this->capture_diag_frame_(raw, ref, frame_size);
+    // Advance the master sample clock once per delivered DMA frame.
+    this->frame_samples_.fetch_add(frame_size, std::memory_order_relaxed);
+    if (this->capture_only_) {
+      // Microphones + reference are recorded; skip the canceller entirely.
+      // The host recreates the DSP outputs offline from the captured audio.
+      continue;
+    }
+
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+    this->neural_reference_active_ = reference_frame.active;
+    this->neural_barge_active_ = this->voice_assistant_active_.load() && reference_frame.active;
+    const bool requested_neural_enabled = this->neural_enabled_requested_.load();
+    if (requested_neural_enabled != this->neural_enabled_) {
+      this->neural_enabled_ = requested_neural_enabled;
+      this->neural_barge_->set_enabled(requested_neural_enabled);
+      neural_time_us = 0; neural_frames = neural_peak_us = 0; neural_last_log = millis();
+    }
+    const int64_t neural_start = esp_timer_get_time();
+    if (this->neural_reset_requested_.exchange(false)) this->neural_barge_->reset();
+    const bool neural_valid = reference_complete && this->diagnostic_raw_slot_.load() < 0 &&
+                              this->echo_state_[0] != nullptr && this->preprocess_state_[0] != nullptr;
+    const auto neural = this->neural_enabled_ ? this->neural_barge_->process(raw + this->microphone_slots_[0],
+        raw + this->microphone_slots_[1], this->tdm_slots_, ref, reference_frame.active,
+        neural_valid, this->neural_threshold_, this->neural_confirmation_,
+        this->neural_barge_active_) : NeuralBargeIn::Result{};
+    this->neural_probability_.store(neural.probability);
+    if (this->neural_controls_audio_()) this->near_end_probability_.store(neural.probability);
+    else if (!this->legacy_near_end_enabled_()) this->near_end_probability_.store(0.f);
+    const uint32_t neural_us = esp_timer_get_time() - neural_start;
+    neural_time_us += neural_us; ++neural_frames; neural_peak_us = std::max(neural_peak_us, neural_us);
+    if (neural.event) { this->neural_events_.fetch_add(1); this->diag_record_event_("NEURAL_BARGE"); }
+    if (millis() - neural_last_log >= this->neural_log_ms_) {
+      ESP_LOGI(TAG, "NEURAL_BARGE enabled=%s active=%s p=%.5f ready=%s candidate=%s confirmed=%s events=%" PRIu32
+                    " avg_us=%" PRIu64 " peak_us=%" PRIu32 " core_budget=%.2f%%",
+          YESNO(this->neural_enabled_), YESNO(this->neural_barge_active_), neural.probability, YESNO(neural.ready), YESNO(neural.candidate),
+          YESNO(neural.confirmed), this->neural_events_.load(), neural_time_us/neural_frames, neural_peak_us,
+          100.f*neural_time_us/neural_frames/frame_budget_us);
+      const float *features = this->neural_barge_->features();
+      float bark_mean[3]{}, spatial_abs_mean = 0, variance_min = INFINITY, variance_max = 0;
+      for (unsigned b = 0; b < 24; ++b)
+        for (unsigned c = 0; c < 3; ++c) bark_mean[c] += features[3*b+c]/24.f;
+      for (unsigned i = 72; i < 84; ++i) spatial_abs_mean += std::abs(features[i])/12.f;
+      for (unsigned i = 0; i < 84; ++i) {
+        variance_min = std::min(variance_min, this->neural_barge_->normalizer_variance()[i]);
+        variance_max = std::max(variance_max, this->neural_barge_->normalizer_variance()[i]);
+      }
+      ESP_LOGI(TAG, "NEURAL_FEATURES sample=%" PRIu64 " playback=%s threshold=%.6f consecutive=%u context=%u resets=%" PRIu32
+                    " bark_logpower_mean=[%.3f,%.3f,%.3f] spatial_delta_abs_mean=%.3f variance=[%.4f,%.4f]",
+          this->frame_samples_.load(), YESNO(reference_frame.active), this->neural_threshold_,
+          this->neural_barge_->consecutive_frames(), this->neural_barge_->context_frames(), this->neural_barge_->resets(),
+          bark_mean[0], bark_mean[1], bark_mean[2], spatial_abs_mean, variance_min, variance_max);
+      neural_time_us=0; neural_frames=neural_peak_us=0; neural_last_log=millis();
+    }
+    float neural_protect = this->neural_protection_ && this->neural_controls_audio_() ? neural.probability : 0.f;
+    for (auto *pre : this->preprocess_state_)
+      if (pre) speex_preprocess_ctl(pre, SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB, &neural_protect);
+#endif
     bool speech_detected = false;
+    float clean_rms = 0.0f;
+    auto measure_clean = [this, frame_size, &clean_rms](const int16_t *pcm) {
+      if (!this->legacy_near_end_enabled_()) return;
+      double energy = 0;
+      for (size_t i = 0; i < frame_size; ++i) energy += static_cast<double>(pcm[i]) * pcm[i];
+      clean_rms = std::sqrt(energy / frame_size);
+    };
+    SpeexReferenceState reference_state{reference_frame.active, reference_frame.startup};
+    NearEndCorrelation::Result near_correlation{};
     if (this->agc_enabled_ && this->agc_gate_config_.enabled) {
-      float reference_rms = this->reference_rms_.load();
       for (uint8_t c = 0; c < (this->beamforming_enabled_ ? 1 : channels); ++c)
         if (this->preprocess_state_[c] != nullptr)
-          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_REFERENCE_RMS, &reference_rms);
+          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_REFERENCE_STATE, &reference_state);
     }
     const int8_t diagnostic_raw_slot = this->diagnostic_raw_slot_.load();
+    auto measure_quality = [&](const int16_t *input, const int16_t *clean) {
+      if (this->legacy_near_end_enabled_())
+        this->cancellation_quality_.process(input, clean, ref, frame_size, reference_frame.active,
+                                            reference_frame.excited, reference_complete);
+    };
+    auto update_soft_suppression = [&]() {
+      if (!this->soft_double_talk_enabled_ || !this->legacy_near_end_enabled_())
+        return;
+      const auto control = this->soft_double_talk_.process(
+          reference_frame, this->cancellation_quality_.snapshot(), this->vad_probability_.load(), frame_size);
+      int attenuation = control.suppression_db;
+      for (uint8_t c = 0; c < (this->beamforming_enabled_ ? 1 : channels); ++c)
+        if (this->preprocess_state_[c] != nullptr)
+          speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, &attenuation);
+    };
     if (diagnostic_raw_slot >= 0) {
       // Deliberate DSP bypass: publish the raw slot as mono for slot mapping.
       for (size_t frame = 0; frame < frame_size; frame++)
@@ -616,6 +773,16 @@ void AECSpeexDspComponent::run_audio_task_() {
 #endif
         const size_t beam_stride = channels;
         speex_echo_cancellation(this->echo_state_[0], mic, ref, processed);
+        if (this->legacy_near_end_enabled_()) {
+          for (uint8_t c = 0; c < channels; ++c)
+            this->near_end_correlation_.process_channel(c, mic + c, channels, processed + c, channels, frame_size);
+          near_correlation = this->near_end_correlation_.finish_frame(channels);
+          SpeexNearEndHint hint{near_correlation.mic_error_correlation,
+                                near_correlation.echo_error_correlation,
+                                this->reference_rms_.load() * this->reference_rms_.load(),
+                                reference_frame.active ? 1 : 0};
+          speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_SET_NEAR_END_HINT, &hint);
+        }
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_echo_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
 #endif
@@ -640,6 +807,9 @@ void AECSpeexDspComponent::run_audio_task_() {
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_start = esp_cpu_get_cycle_count();
 #endif
+        measure_clean(out);
+        measure_quality(processed, out);
+        update_soft_suppression();
         speech_detected = speex_preprocess_run(this->preprocess_state_[0], out) != 0;
 #ifdef USE_AEC_SPEEXDSP_PROFILE
         profile_preprocess_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
@@ -655,6 +825,14 @@ void AECSpeexDspComponent::run_audio_task_() {
           uint32_t profile_start = esp_cpu_get_cycle_count();
 #endif
           speex_echo_cancellation(this->echo_state_[c], channel_mic, ref, channel_out);
+          if (this->legacy_near_end_enabled_()) {
+            this->near_end_correlation_.process_channel(c, channel_mic, 1, channel_out, 1, frame_size);
+            const auto &channel = this->near_end_correlation_.result().channels[c];
+            SpeexNearEndHint hint{channel.mic_error_correlation, channel.echo_error_correlation,
+                                  this->reference_rms_.load() * this->reference_rms_.load(),
+                                  reference_frame.active ? 1 : 0};
+            speex_preprocess_ctl(this->preprocess_state_[c], SPEEX_PREPROCESS_SET_NEAR_END_HINT, &hint);
+          }
 #ifdef USE_AEC_SPEEXDSP_PROFILE
           profile_echo_cycles += static_cast<uint32_t>(esp_cpu_get_cycle_count() - profile_start);
 #endif
@@ -666,6 +844,7 @@ void AECSpeexDspComponent::run_audio_task_() {
 #ifdef USE_AEC_SPEEXDSP_PROFILE
           profile_start = esp_cpu_get_cycle_count();
 #endif
+          if (c == 0) { measure_clean(channel_out); measure_quality(channel_mic, channel_out); update_soft_suppression(); }
           const int detected = speex_preprocess_run(this->preprocess_state_[c], channel_out);
           if (c == 0)
             speech_detected = detected != 0;
@@ -676,6 +855,8 @@ void AECSpeexDspComponent::run_audio_task_() {
           stage_post[c] += stage_energy(channel_out, 1);
 #endif
         }
+        if (this->legacy_near_end_enabled_())
+          near_correlation = this->near_end_correlation_.finish_frame(channels);
         if (channels == 2) {
           for (size_t frame = 0; frame < frame_size; frame++)
             out[frame] = static_cast<int16_t>((processed[frame] + processed[frame_size + frame]) / 2);
@@ -685,14 +866,101 @@ void AECSpeexDspComponent::run_audio_task_() {
       }
     }
 
-    // VAD state and probability come from the primary preprocessor.
+    const bool previous_near_end = this->near_end_speech_;
+    this->near_end_speech_ = false;
+    if (this->legacy_near_end_enabled_() && diagnostic_raw_slot < 0 &&
+        this->echo_state_[0] != nullptr && this->preprocess_state_[0] != nullptr) {
+      SpeexEchoResidualDiagnostics echo{};
+      SpeexPreprocessResidualDiagnostics pre{};
+      float rms = 0;
+      speex_echo_ctl(this->echo_state_[0], SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS, &echo);
+      speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_GET_RESIDUAL_DIAGNOSTICS, &pre);
+      speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_GET_PRE_AGC_RMS, &rms);
+      SpeexNearEndDiagnostics near{};
+      speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_GET_NEAR_END_DIAGNOSTICS, &near);
+      this->near_end_probability_.store(near.probability);
+      bool observation_valid = reference_complete;
+      for (size_t n = 0; n < frame_size && observation_valid; ++n) {
+        for (uint8_t c = 0; c < channels; ++c)
+          observation_valid &= std::abs(static_cast<int32_t>(raw[n * this->tdm_slots_ + this->processed_slots_[c]])) < 32767;
+        observation_valid &= std::abs(static_cast<int32_t>(ref[n])) < 32767;
+      }
+      const bool detected_near_end = this->near_end_detector_.process(
+          this->vad_enabled_ && speech_detected, echo.adapted, this->reference_rms_.load(),
+          rms, clean_rms, echo.removed_rms, pre.input_power, pre.echo_power, pre.noise_power, frame_size,
+          observation_valid, &reference_frame, &this->cancellation_quality_.snapshot(), millis());
+      this->near_end_speech_ = detected_near_end;
+      if (!observation_valid) this->cancellation_quality_.invalidate();
+      if (this->near_end_detector_.observation_enabled() &&
+          ((reference_frame.active && millis() - quality_last_log >= 250) || previous_near_end != this->near_end_speech_)) {
+        quality_last_log = millis();
+        const auto &q = this->cancellation_quality_.snapshot();
+        const auto &baseline = this->near_end_detector_.echo_baseline();
+        ESP_LOGI(TAG, "ECHO_CONTROL adaptive=%s linear_envelope_rms=%.1f threshold_pre_agc_rms=%.1f pre_agc_rms=%.1f clean_rms=%.1f speech=%s",
+                 YESNO(this->near_end_detector_.adaptive_used()), this->near_end_detector_.adaptive_threshold_rms(),
+                 this->near_end_detector_.adaptive_pre_agc_threshold_rms(), rms,
+                 clean_rms, YESNO(this->near_end_speech_));
+        const auto &learning = this->near_end_detector_.echo_learning_counters();
+        ESP_LOGI(TAG, "ECHO_LEARN model raw_corr=%.3f qualified_frames=%" PRIu32 " commits=%" PRIu32
+                     " speech_resets=%" PRIu32 " integrity_resets=%" PRIu32 " guard_resets=%" PRIu32
+                     " evidence_skips=%" PRIu32,
+                 q.input_correlation, learning.qualified, learning.committed, learning.speech_resets,
+                 learning.integrity_resets, learning.startup_resets, learning.evidence_skips);
+        ESP_LOGI(TAG, "ECHO_BASELINE model band=%d qualified=%s ready=%s accepted_ms=%" PRIu32
+                     " age_ms=%" PRIu32 " coverage=%.2f median_db=%.1f upper_db=%.1f excess_db=%.1f",
+                 baseline.band, YESNO(baseline.qualified), YESNO(baseline.ready), baseline.accepted_ms,
+                 baseline.age_ms, baseline.coverage, baseline.median_db, baseline.upper_db, baseline.excess_db);
+        ESP_LOGI(TAG, "AEC_QUALITY shadow valid=%s ref=%s guard=%s adapted=%s age_ms=%" PRIu32
+                     " reduction_db=%.1f residual_ref_db=%.1f corr=%.3f lag=%d candidate=%s speech=%s echo_hypothesis=%s",
+                 YESNO(q.valid), YESNO(reference_frame.active), YESNO(reference_frame.startup), YESNO(echo.adapted),
+                 q.active_ms, q.reduction_db, q.residual_to_reference_db, q.residual_correlation, q.lag_samples,
+                 YESNO(this->near_end_detector_.candidate()), YESNO(this->near_end_speech_),
+                 YESNO(this->near_end_detector_.echo_dominated()));
+        ESP_LOGI(TAG, "AEC_NEAR p=%.3f instant=%.3f excess=%.3f corr=%.3f path=%.3f "
+                      "cde0=%.3f cde1=%.3f cye0=%.3f cye1=%.3f pframe=%.3f leak=%.4f "
+                      "ref=%.1f",
+                 near.probability, near.instantaneous_probability, near.excess_probability,
+                 near.correlation_probability, near.path_change_probability,
+                 near_correlation.channels[0].mic_error_correlation,
+                 near_correlation.channels[1].mic_error_correlation,
+                 near_correlation.channels[0].echo_error_correlation,
+                 near_correlation.channels[1].echo_error_correlation,
+                 pre.frame_probability, echo.leak, this->reference_rms_.load());
+      }
+      if (previous_near_end != this->near_end_speech_) {
+        this->diag_record_event_(this->near_end_speech_ ? "NEAR_START" : "NEAR_STOP");
+        ESP_LOGD(TAG, "Near-end edge: speech=%s reference=%s candidate=%s pre_agc=%.1f clean=%.1f removed=%.1f "
+                      "input_ps=%.3g echo_ps=%.3g noise_ps=%.3g",
+                  YESNO(this->near_end_speech_), YESNO(this->near_end_detector_.reference_active()),
+                  YESNO(this->near_end_detector_.candidate()), rms, clean_rms, echo.removed_rms,
+                  pre.input_power, pre.echo_power, pre.noise_power);
+      }
+    } else {
+      this->near_end_detector_.discard_pending_observation();
+      this->cancellation_quality_.invalidate();
+    }
+
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+    if (this->neural_controls_audio_())
+      this->near_end_speech_ = neural.confirmed;
+#endif
+    if (!this->neural_controls_audio_() && !this->legacy_near_end_enabled_())
+      this->near_end_speech_ = speech_detected;
+    // One decision for callers and PCM gating. Without near_end configured,
+    // retain legacy Speex VAD semantics for existing non-barge-in installations.
+    this->vad_state_.store(diagnostic_raw_slot < 0 && this->vad_enabled_ &&
+                          ((this->neural_controls_audio_() || this->legacy_near_end_enabled_()) ? this->near_end_speech_ : speech_detected));
+    this->speex_vad_probability_.store(0.f);
     if (this->preprocess_state_[0] != nullptr && diagnostic_raw_slot < 0) {
       // GET_VAD reports enablement; the run() return value is the decision.
-      this->vad_state_.store(this->vad_enabled_ && speech_detected);
       spx_int32_t prob = 0;
       speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_GET_PROB, &prob);
-      this->vad_probability_.store(static_cast<float>(prob) / 100.0f);
+      this->speex_vad_probability_.store(static_cast<float>(prob) / 100.0f);
     }
+    this->vad_probability_.store(this->speex_vad_probability_.load());
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+    if (this->neural_controls_audio_()) this->vad_probability_.store(neural.probability);
+#endif
 
 #ifdef USE_AEC_SPEEXDSP_TELEMETRY
     if (diagnostic_raw_slot < 0 && this->echo_state_[0] != nullptr && this->preprocess_state_[0] != nullptr) {
@@ -710,6 +978,21 @@ void AECSpeexDspComponent::run_audio_task_() {
     }
     const uint32_t stage_now = millis();
     if (stage_now - stage_last_log >= 1000 && stage_frames > 0) {
+      if (this->legacy_near_end_enabled_()) {
+        using Scene = AcousticObserver::Scene;
+        const auto &observer = this->near_end_detector_.observer();
+        for (auto scene : {Scene::NOISE, Scene::NEAR_ONLY, Scene::FAR_ONLY}) {
+          const auto &stats = observer.distribution(scene);
+          if (stats.accepted_samples)
+            ESP_LOGI(TAG, "ACOUSTIC_OBSERVE scene=%u accepted_s=%.1f linear_rms_p20=%.1f p50=%.1f p80=%.1f",
+                     static_cast<unsigned>(scene), stats.accepted_samples / 16000.0,
+                     stats.percentile(0.2f), stats.percentile(0.5f), stats.percentile(0.8f));
+        }
+      }
+      if (this->legacy_near_end_enabled_())
+        ESP_LOGI(TAG, "NEAR_END last_frame reference=%s candidate=%s speech=%s clean_rms=%.1f",
+                 YESNO(this->near_end_detector_.reference_active()), YESNO(this->near_end_detector_.candidate()),
+                 YESNO(this->near_end_speech_), clean_rms);
       const double samples = static_cast<double>(stage_frames) * frame_size;
       auto rms = [samples](uint64_t energy) { return std::sqrt(static_cast<double>(energy) / samples); };
       ESP_LOGI(TAG, "AEC_STAGES window_ms=%" PRIu32 " frames=%" PRIu32
@@ -815,19 +1098,6 @@ void AECSpeexDspComponent::run_audio_task_() {
     }
 #endif
 
-#ifdef VOICE_ASSISTANT_BARGE_IN
-    // This is only an inactivity meter. It must not drive turn detection.
-    constexpr uint32_t MICROPHONE_ACTIVITY_PEAK = 600;
-    for (size_t frame = 0; frame < frame_size; frame++) {
-      const int32_t sample = out[frame];
-      const uint32_t magnitude = sample == INT16_MIN ? 32768U : static_cast<uint32_t>(std::abs(sample));
-      if (magnitude >= MICROPHONE_ACTIVITY_PEAK) {
-        this->last_microphone_activity_ms_.store(millis());
-        break;
-      }
-    }
-#endif
-
 #ifdef USE_AEC_SPEEXDSP_SLOT_LOGS
     if (log_slots) {
       uint64_t output_sum_sq = 0;
@@ -880,6 +1150,9 @@ void AECSpeexDspComponent::run_audio_task_() {
                  "DSP load: %" PRIu32 " frames in %" PRIu32 " ms: processing avg %" PRIu32
                  " us/frame (%.1f%% of real time), peak %" PRIu32 " (%.1f%%), frame budget %" PRIu32 " us",
                  load_frames, elapsed_ms, avg_us, avg_pct, load_peak_us, peak_pct, frame_budget_us);
+        ESP_LOGI(TAG, "DSP stack: minimum free=%u bytes of %u",
+                 static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)),
+                 static_cast<unsigned>(AUDIO_TASK_STACK_BYTES));
 
         spx_fft_profile_t fft_now{};
         spx_fft_profile_get(&fft_now);
@@ -975,8 +1248,11 @@ void AECSpeexDspComponent::run_playback_task_() {
     uint8_t channels = this->speaker_ == nullptr ? 1 : this->speaker_->get_audio_stream_info().get_channels();
     size_t requested_playback_bytes = frame_size * channels * sizeof(int16_t);
 
+    // Host-driven pause: leave buffered media untouched and feed silence to
+    // the TX (and therefore the reference) until resumed.
+    const bool playback_paused = this->playback_paused_.load();
     size_t playback_bytes = 0;
-    if (this->playback_buffer_ != nullptr) {
+    if (this->playback_buffer_ != nullptr && !playback_paused) {
       const size_t available = this->playback_buffer_->available();
       const uint32_t now = millis();
       bool buffering = this->buffering_.load();
@@ -1037,18 +1313,6 @@ void AECSpeexDspComponent::run_playback_task_() {
       }
     }
 
-#ifdef VOICE_ASSISTANT_BARGE_IN
-    constexpr uint32_t PLAYBACK_ACTIVITY_PEAK = 128;
-    for (size_t frame = 0; frame < available_frames; frame++) {
-      const int32_t sample = reference[frame];
-      const uint32_t magnitude = sample == INT16_MIN ? 32768U : static_cast<uint32_t>(std::abs(sample));
-      if (magnitude >= PLAYBACK_ACTIVITY_PEAK) {
-        this->last_playback_activity_ms_.store(millis());
-        break;
-      }
-    }
-#endif
-
     if (this->reference_buffer_ != nullptr) {
       const size_t reference_bytes = frame_size * sizeof(int16_t);
       if (this->reference_buffer_->free() < reference_bytes)
@@ -1078,12 +1342,11 @@ void AECSpeexDspComponent::apply_reference_delay_(int16_t *ref, size_t frames) {
   // The history keeps running even when the delay is 0; zero delay is a
   // pass-through.
   const int d = this->reference_delay_.load();
-  if (d <= 0)
-    return;
   constexpr int size = REFERENCE_DELAY_MAX_SAMPLES + 1;
   for (size_t i = 0; i < frames; ++i) {
     this->reference_history_[this->reference_history_pos_] = ref[i];
-    ref[i] = this->reference_history_[(this->reference_history_pos_ + size - d) % size];
+    if (d > 0)
+      ref[i] = this->reference_history_[(this->reference_history_pos_ + size - d) % size];
     this->reference_history_pos_ = (this->reference_history_pos_ + 1) % size;
   }
 }
@@ -1091,7 +1354,14 @@ void AECSpeexDspComponent::apply_reference_delay_(int16_t *ref, size_t frames) {
 void AECSpeexDspComponent::publish_frame_(const int16_t *mono, size_t frames) {
   if (this->microphone_ == nullptr)
     return;
-  this->microphone_->publish(reinterpret_cast<const uint8_t *>(mono), frames * sizeof(int16_t));
+  // Neural masking is restricted to playback during an active assistant.
+  // Outside that scope the processed PCM reaches WakeNet unchanged.
+  const bool echo_rejected = this->neural_controls_audio_()
+                                 ? this->neural_reference_active_ && !this->near_end_speech_
+                                 : this->legacy_near_end_enabled_() && this->near_end_detector_.reference_active() &&
+                                       !this->near_end_detector_.candidate();
+  this->microphone_->publish(reinterpret_cast<const uint8_t *>(mono), frames * sizeof(int16_t),
+                            this->vad_state_.load(), echo_rejected);
 }
 
 void AECSpeexDspComponent::capture_frame_(const int16_t *mono, size_t frames) {
@@ -1141,6 +1411,490 @@ size_t AECSpeexDspComponent::play_capture() {
 
   ESP_LOGI(TAG, "Queued %u capture frames for playback", static_cast<unsigned>(captured_frames));
   return captured_frames;
+}
+
+void AECSpeexDspComponent::capture_diag_frame_(const int16_t *raw, const int16_t *ref, size_t frames) {
+  if (this->diag_state_.load(std::memory_order_relaxed) != AEC_SPEEXDSP_CAPTURE_CAPTURING)
+    return;
+  if (this->diag_buffer_ == nullptr)
+    return;
+
+  size_t written = this->diag_written_frames_.load();
+#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
+  // This method runs on the audio task: align model initialization to the
+  // first recorded frame without mutating inference state from another task.
+  if (written == 0) this->neural_barge_->reset();
+#endif
+  const uint32_t target = this->diag_target_frames_.load();
+  const size_t remaining = target > written ? target - written : 0;
+  const size_t to_copy = std::min(frames, remaining);
+
+  for (size_t n = 0; n < to_copy; ++n) {
+    int16_t *dst = this->diag_buffer_ + (written + n) * DIAG_CHANNELS;
+    dst[0] = raw[n * this->tdm_slots_ + this->processed_slots_[0]];
+    dst[1] = raw[n * this->tdm_slots_ + this->processed_slots_[1]];
+    dst[2] = ref[n];
+  }
+
+  written += to_copy;
+  this->diag_written_frames_.store(written);
+  if (written >= target) {
+    this->diag_state_.store(AEC_SPEEXDSP_CAPTURE_READY);
+    ESP_LOGI(TAG, "Diag capture complete: %u frames x %u channels (%.1fs)", static_cast<unsigned>(written),
+             static_cast<unsigned>(DIAG_CHANNELS), static_cast<float>(written) / SAMPLE_RATE);
+  }
+}
+
+void AECSpeexDspComponent::diag_record_event_(const char *id) {
+  const uint64_t sample = this->frame_samples_.load();
+  const uint32_t now_ms = millis();
+  // Live marker for the host: also visible in the console log stream.
+  ESP_LOGI(TAG, "EVT %s sample=%llu millis=%u", id, static_cast<unsigned long long>(sample),
+           static_cast<unsigned>(now_ms));
+  if (this->diag_state_.load(std::memory_order_relaxed) != AEC_SPEEXDSP_CAPTURE_CAPTURING)
+    return;
+  if (this->diag_mutex_ == nullptr)
+    return;
+  DiagEvent event{};
+  event.sample = sample;
+  event.millis = now_ms;
+  snprintf(event.id, sizeof(event.id), "%s", id);
+  if (xSemaphoreTake(this->diag_mutex_, 0) == pdTRUE) {
+    if (this->diag_events_.size() < 256)
+      this->diag_events_.push_back(event);
+    xSemaphoreGive(this->diag_mutex_);
+  }
+}
+
+bool AECSpeexDspComponent::diag_capture_start(uint32_t seconds) {
+  if (this->diag_state_.load() == AEC_SPEEXDSP_CAPTURE_CAPTURING)
+    return false;
+  if (this->diag_max_seconds_ == 0)
+    return false;
+  const uint32_t capped = std::clamp<uint32_t>(seconds, 1, this->diag_max_seconds_);
+  const size_t target = static_cast<size_t>(capped) * SAMPLE_RATE;
+  if (this->diag_buffer_ == nullptr || this->diag_capacity_frames_ < target) {
+    if (this->diag_buffer_ != nullptr) {
+      heap_caps_free(this->diag_buffer_);
+      this->diag_buffer_ = nullptr;
+      this->diag_capacity_frames_ = 0;
+    }
+    const size_t bytes = target * DIAG_CHANNELS * sizeof(int16_t);
+    // Plain malloc path: the pointer must stay valid for heap_caps_free().
+    // (heap_caps_aligned_alloc pointers may only be freed via the aligned
+    // allocator; mixing them aborts the heap at CAP FREE time.)
+    this->diag_buffer_ = static_cast<int16_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
+    if (this->diag_buffer_ == nullptr) {
+      ESP_LOGE(TAG, "Could not allocate %u KiB diag capture buffer", static_cast<unsigned>(bytes / 1024));
+      return false;
+    }
+    this->diag_capacity_frames_ = target;
+  }
+  if (this->diag_mutex_ != nullptr && xSemaphoreTake(this->diag_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    this->diag_events_.clear();
+    xSemaphoreGive(this->diag_mutex_);
+  }
+  this->diag_channels_.store(this->processed_channels_());
+  this->diag_written_frames_.store(0);
+  this->diag_target_frames_.store(target);
+  this->diag_start_sample_.store(this->frame_samples_.load());
+  this->diag_state_.store(AEC_SPEEXDSP_CAPTURE_CAPTURING);
+  return true;
+}
+
+bool AECSpeexDspComponent::diag_capture_stop() {
+  uint8_t expected = AEC_SPEEXDSP_CAPTURE_CAPTURING;
+  if (this->diag_state_.compare_exchange_strong(expected, AEC_SPEEXDSP_CAPTURE_READY))
+    return true;
+  return expected == AEC_SPEEXDSP_CAPTURE_READY;  // already stopped
+}
+
+bool AECSpeexDspComponent::diag_capture_free() {
+  if (this->diag_state_.load() == AEC_SPEEXDSP_CAPTURE_CAPTURING)
+    return false;
+  if (this->diag_buffer_ != nullptr) {
+    heap_caps_free(this->diag_buffer_);
+    this->diag_buffer_ = nullptr;
+    this->diag_capacity_frames_ = 0;
+  }
+  this->diag_written_frames_.store(0);
+  this->diag_target_frames_.store(0);
+  this->diag_state_.store(AEC_SPEEXDSP_CAPTURE_IDLE);
+  return true;
+}
+
+size_t AECSpeexDspComponent::diag_copy_frames(uint8_t *dst, size_t dst_bytes, size_t src_frame) const {
+  if (this->diag_buffer_ == nullptr || dst == nullptr)
+    return 0;
+  const size_t written = this->diag_written_frames_.load();
+  if (src_frame >= written)
+    return 0;
+  const size_t frame_bytes = DIAG_CHANNELS * sizeof(int16_t);
+  const size_t max_frames = std::min({dst_bytes / frame_bytes, written - src_frame, this->diag_capacity_frames_ - src_frame});
+  std::memcpy(dst, reinterpret_cast<const uint8_t *>(this->diag_buffer_) + src_frame * frame_bytes,
+              max_frames * frame_bytes);
+  return max_frames;
+}
+
+std::vector<AECSpeexDspComponent::DiagEvent> AECSpeexDspComponent::diag_copy_events() const {
+  std::vector<DiagEvent> events;
+  if (this->diag_mutex_ != nullptr && xSemaphoreTake(this->diag_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    events = this->diag_events_;
+    xSemaphoreGive(this->diag_mutex_);
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------------
+// USB Serial/JTAG host control channel.
+//
+// Text commands are newline terminated: PING, INFO, PLAY <track>, STOP, PAUSE,
+// RESUME, MARK <label>, CAP START [seconds], CAP STOP, CAP STATUS,
+// CAP DUMP [from_frame], CAP FREE. Every command is answered with one
+// "OK ..." or "ERR ..." line. Asynchronous events are "EVT <id> ..." lines.
+// Binary diagnostic dumps are CRC framed packets interleaved with (suppressed)
+// console logs; see serial_dump_capture_.
+// ---------------------------------------------------------------------------
+
+static constexpr uint8_t DIAG_PACKET_SYNC0 = 0xA5;
+static constexpr uint8_t DIAG_PACKET_SYNC1 = 0x5A;
+static constexpr uint8_t DIAG_PACKET_TYPE = 0x01;
+static constexpr uint32_t DIAG_FRAMES_PER_PACKET = 256;
+static constexpr size_t DIAG_PACKET_HEADER = 9;   // sync(2) type(1) len(2) seq(4)
+static constexpr size_t DIAG_PACKET_CRC = 2;
+
+static uint16_t diag_crc16(const uint8_t *data, size_t length) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < length; i++) {
+    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    for (uint8_t bit = 0; bit < 8; bit++)
+      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021) : static_cast<uint16_t>(crc << 1);
+  }
+  return crc;
+}
+
+void AECSpeexDspComponent::set_serial_control_actions(SerialControlActions actions) {
+  this->serial_actions_ = std::move(actions);
+  // Tell the host the on_boot wiring completed, so it can distinguish a
+  // fully booted device from one that is still coming up after a reset.
+  this->serial_write_string_("AEC_ACTIONS_WIRED\n");
+}
+
+void AECSpeexDspComponent::serial_task(void *params) {
+  static_cast<AECSpeexDspComponent *>(params)->run_serial_task_();
+}
+
+bool AECSpeexDspComponent::serial_write_(const uint8_t *data, size_t length) {
+#if SOC_USB_SERIAL_JTAG_SUPPORTED
+  // The logger installed the USB Serial/JTAG driver with a 512-byte TX ring;
+  // usb_serial_jtag_write_bytes uses a no-split ring send, so any single call
+  // larger than the ring can never complete. Write in small chunks.
+  constexpr size_t MAX_CHUNK = 256;
+  size_t offset = 0;
+  uint32_t stalled_ms = 0;
+  while (offset < length) {
+    const size_t chunk = std::min(length - offset, MAX_CHUNK);
+    const size_t written =
+        usb_serial_jtag_write_bytes(data + offset, chunk, pdMS_TO_TICKS(500));
+    if (written == 0) {
+      // Host not reading (or detached): give up after a while so the control
+      // task stays responsive to new commands. Generous, because a dump takes
+      // tens of seconds and transient host hiccups should not abort it.
+      stalled_ms += 500;
+      if (stalled_ms >= 10000)
+        return false;
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    stalled_ms = 0;
+    offset += written;
+  }
+#endif
+  return true;
+}
+
+const char *diag_state_name(uint8_t state) {
+  switch (state) {
+    case AEC_SPEEXDSP_CAPTURE_CAPTURING:
+      return "capturing";
+    case AEC_SPEEXDSP_CAPTURE_READY:
+      return "ready";
+    default:
+      return "idle";
+  }
+}
+
+void AECSpeexDspComponent::run_serial_task_() {
+#if SOC_USB_SERIAL_JTAG_SUPPORTED
+  ESP_LOGI(TAG, "Serial control ready: PING/INFO/PLAY/STOP/PAUSE/RESUME/MARK/CAP");
+  this->serial_write_string_("AEC_READY frame_samples=" + std::to_string(this->frame_samples_.load()) + "\n");
+  std::string line;
+  uint8_t buffer[256];
+  while (true) {
+    const int received = usb_serial_jtag_read_bytes(buffer, sizeof(buffer), pdMS_TO_TICKS(5));
+    for (int i = 0; i < received; i++) {
+      const char c = static_cast<char>(buffer[i]);
+      if (c == '\n' || c == '\r') {
+        if (!line.empty()) {
+          this->handle_serial_line_(line);
+          line.clear();
+        }
+      } else if (line.size() < 160) {
+        line.push_back(c);
+      }
+    }
+  }
+#endif
+}
+
+void AECSpeexDspComponent::handle_serial_line_(const std::string &line) {
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= line.size()) {
+    const size_t space = line.find(' ', start);
+    if (space == std::string::npos) {
+      if (start < line.size())
+        parts.emplace_back(line.substr(start));
+      break;
+    }
+    if (space > start)
+      parts.emplace_back(line.substr(start, space - start));
+    start = space + 1;
+  }
+  if (parts.empty())
+    return;
+  std::string verb = parts[0];
+  std::transform(verb.begin(), verb.end(), verb.begin(), ::toupper);
+
+  if (verb == "PING") {
+    this->serial_write_string_("PONG uptime_ms=" + std::to_string(millis()) +
+                               " frame_samples=" + std::to_string(this->frame_samples_.load()) + "\n");
+    return;
+  }
+  if (verb == "INFO") {
+    std::string mics;
+    for (const uint8_t slot : this->microphone_slots_)
+      mics += (mics.empty() ? "" : ",") + std::to_string(slot);
+    this->serial_write_string_("INFO name=" + std::string(esphome::App.get_name()) + " version=" + ESPHOME_VERSION +
+                               " uptime_ms=" + std::to_string(millis()) + "\n");
+    this->serial_write_string_("INFO audio rate=16000 frame=" + std::to_string(this->frame_size_) +
+                               " filter=" + std::to_string(this->filter_length_) +
+                               " beam=" + (this->beamforming_enabled_ ? "1" : "0") + " mics=" + mics +
+                               " ref_slot=" + std::to_string(this->reference_slot_) + "\n");
+    this->serial_write_string_("INFO diag state=" + std::string(diag_state_name(this->diag_state_.load())) +
+                               " frames=" + std::to_string(this->diag_written_frames_.load()) +
+                               " capacity=" + std::to_string(this->diag_capacity_frames_) +
+                               " max_seconds=" + std::to_string(this->diag_max_seconds_) +
+                               " paused=" + (this->playback_paused_.load() ? "1" : "0") +
+                               " frame_samples=" + std::to_string(this->frame_samples_.load()) + "\n");
+    this->serial_write_string_("OK INFO\n");
+    return;
+  }
+  if (verb == "PLAY") {
+    if (parts.size() < 2) {
+      this->serial_write_string_("ERR PLAY missing_track\n");
+      return;
+    }
+    std::string track = parts[1];
+    std::transform(track.begin(), track.end(), track.begin(), ::tolower);
+    const auto action = this->serial_actions_.play.find(track);
+    if (action == this->serial_actions_.play.end()) {
+      this->serial_write_string_("ERR PLAY unknown_track " + track + "\n");
+      return;
+    }
+    this->diag_record_event_(("PLAY_" + track).c_str());
+    ESP_LOGI(TAG, "PLAY %s requested over serial at frame %llu", track.c_str(),
+             static_cast<unsigned long long>(this->frame_samples_.load()));
+    action->second();
+    this->serial_write_string_("OK PLAY " + track + "\n");
+    return;
+  }
+  if (verb == "STOP" || verb == "PAUSE" || verb == "RESUME") {
+    this->diag_record_event_(verb.c_str());
+    switch (verb[0]) {
+      case 'S':
+        if (this->serial_actions_.stop)
+          this->serial_actions_.stop();
+        this->set_playback_paused(false);
+        break;
+      case 'P':
+        if (this->serial_actions_.pause)
+          this->serial_actions_.pause();
+        else
+          this->set_playback_paused(true);
+        break;
+      default:
+        if (this->serial_actions_.resume)
+          this->serial_actions_.resume();
+        else
+          this->set_playback_paused(false);
+        break;
+    }
+    this->serial_write_string_("OK " + verb + "\n");
+    return;
+  }
+  if (verb == "MARK") {
+    std::string label = parts.size() > 1 ? parts[1] : "mark";
+    std::transform(label.begin(), label.end(), label.begin(), ::toupper);
+    std::string event_id = "MARK_" + label;
+    this->diag_record_event_(event_id.c_str());
+    this->serial_write_string_("OK MARK " + label + " sample=" +
+                               std::to_string(this->frame_samples_.load()) + "\n");
+    return;
+  }
+  if (verb == "VOLUME") {
+    if (parts.size() < 2) {
+      this->serial_write_string_("ERR VOLUME missing_level\n");
+      return;
+    }
+    const float level = strtof(parts[1].c_str(), nullptr);
+    if (level < 0.0f || level > 1.0f) {
+      this->serial_write_string_("ERR VOLUME out_of_range\n");
+      return;
+    }
+    if (!this->serial_actions_.set_volume) {
+      this->serial_write_string_("ERR VOLUME not_wired\n");
+      return;
+    }
+    char volume_event[20];
+    snprintf(volume_event, sizeof(volume_event), "VOLUME_%d", static_cast<int>(level * 100.0f + 0.5f));
+    this->diag_record_event_(volume_event);
+    this->serial_actions_.set_volume(level);
+    this->serial_write_string_("OK VOLUME " + std::to_string(level).substr(0, 5) + "\n");
+    return;
+  }
+  if (verb == "CAP") {
+    if (parts.size() < 2) {
+      this->serial_write_string_("ERR CAP missing_subcommand\n");
+      return;
+    }
+    std::string sub = parts[1];
+    std::transform(sub.begin(), sub.end(), sub.begin(), ::toupper);
+    if (sub == "START") {
+      uint32_t seconds = parts.size() > 2 ? strtoul(parts[2].c_str(), nullptr, 10) : 0;
+      if (seconds == 0)
+        seconds = this->diag_max_seconds_;
+      if (!this->diag_capture_start(seconds)) {
+        this->serial_write_string_("ERR CAP START busy\n");
+        return;
+      }
+      this->serial_write_string_("OK CAP START frames=" + std::to_string(this->diag_target_frames_.load()) +
+                                 " channels=" + std::to_string(static_cast<unsigned>(DIAG_CHANNELS)) +
+                                 " start_sample=" + std::to_string(this->diag_start_sample_.load()) + "\n");
+      return;
+    }
+    if (sub == "STOP") {
+      if (!this->diag_capture_stop()) {
+        this->serial_write_string_("ERR CAP STOP not_capturing\n");
+        return;
+      }
+      this->serial_write_string_("OK CAP STOP frames=" + std::to_string(this->diag_written_frames_.load()) + "\n");
+      return;
+    }
+    if (sub == "STATUS") {
+      this->serial_write_string_("OK CAP STATUS state=" + std::string(diag_state_name(this->diag_state_.load())) +
+                                 " frames=" + std::to_string(this->diag_written_frames_.load()) +
+                                 " capacity=" + std::to_string(this->diag_capacity_frames_) +
+                                 " start_sample=" + std::to_string(this->diag_start_sample_.load()) +
+                                 " mdf_channels=" + std::to_string(this->diag_channels_.load()) +
+                                 " frame_samples=" + std::to_string(this->frame_samples_.load()) + "\n");
+      return;
+    }
+    if (sub == "DUMP") {
+      const uint32_t from_frame = parts.size() > 2 ? strtoul(parts[2].c_str(), nullptr, 10) : 0;
+      this->serial_dump_capture_(from_frame);
+      return;
+    }
+    if (sub == "FREE") {
+      if (!this->diag_capture_free()) {
+        this->serial_write_string_("ERR CAP FREE busy\n");
+        return;
+      }
+      this->serial_write_string_("OK CAP FREE\n");
+      return;
+    }
+    this->serial_write_string_("ERR CAP unknown_subcommand " + sub + "\n");
+    return;
+  }
+  this->serial_write_string_("ERR unknown_command " + verb + "\n");
+}
+
+void AECSpeexDspComponent::serial_dump_capture_(uint32_t from_frame) {
+  if (this->get_diag_capture_state() != AEC_SPEEXDSP_CAPTURE_READY) {
+    this->serial_write_string_("ERR CAP DUMP not_ready\n");
+    return;
+  }
+  const size_t frames = this->diag_written_frames_.load();
+  if (from_frame >= frames) {
+    this->serial_write_string_("ERR CAP DUMP from_out_of_range " + std::to_string(from_frame) + "\n");
+    return;
+  }
+  this->serial_write_string_("OK CAP DUMP from_frame=" + std::to_string(from_frame) + "\n");
+
+  char meta[192];
+  snprintf(meta, sizeof(meta),
+           "DIAG_META frames=%u channels=%u rate=%u bytes=%u start_sample=%llu mdf_channels=%u beam=%d\n",
+           static_cast<unsigned>(frames), static_cast<unsigned>(DIAG_CHANNELS), static_cast<unsigned>(SAMPLE_RATE),
+           static_cast<unsigned>(frames * DIAG_CHANNELS * sizeof(int16_t)),
+           static_cast<unsigned long long>(this->diag_start_sample_.load()),
+           static_cast<unsigned>(this->diag_channels_.load()), this->beamforming_enabled_ ? 1 : 0);
+  // Console logs interleave at USB write granularity, so silence both log
+  // paths for the binary transfer. The host CRC-checks packets and resumes
+  // with "CAP DUMP <frame>" if a packet is ever corrupted.
+  esp_log_level_t previous_esp_level = esp_log_level_get("*");
+  esp_log_level_set("*", ESP_LOG_NONE);
+  const uint8_t previous_esphome_level = esphome::logger::global_logger->get_log_level();
+  esphome::logger::global_logger->set_log_level(ESPHOME_LOG_LEVEL_NONE);
+
+  this->serial_write_string_(meta);
+  for (const auto &event : this->diag_copy_events()) {
+    char event_line[48];
+    snprintf(event_line, sizeof(event_line), "DIAG_EVT %llu %u %s\n",
+             static_cast<unsigned long long>(event.sample), static_cast<unsigned>(event.millis), event.id);
+    this->serial_write_string_(event_line);
+  }
+
+  const size_t frame_bytes = DIAG_CHANNELS * sizeof(int16_t);
+  std::vector<uint8_t> packet(DIAG_PACKET_HEADER + DIAG_FRAMES_PER_PACKET * frame_bytes + DIAG_PACKET_CRC);
+  uint32_t frame = from_frame;
+  while (frame < frames) {
+    const uint32_t chunk =
+        std::min<uint32_t>(DIAG_FRAMES_PER_PACKET, static_cast<uint32_t>(frames - frame));
+    const size_t payload_bytes = chunk * frame_bytes;
+    packet[0] = DIAG_PACKET_SYNC0;
+    packet[1] = DIAG_PACKET_SYNC1;
+    packet[2] = DIAG_PACKET_TYPE;
+    packet[3] = payload_bytes & 0xFF;
+    packet[4] = (payload_bytes >> 8) & 0xFF;
+    for (uint8_t i = 0; i < 4; i++)
+      packet[5 + i] = (frame >> (8 * i)) & 0xFF;
+    const size_t copied = this->diag_copy_frames(packet.data() + DIAG_PACKET_HEADER, payload_bytes, frame);
+    if (copied != chunk) {
+      esp_log_level_set("*", previous_esp_level);
+      esphome::logger::global_logger->set_log_level(previous_esphome_level);
+      this->serial_write_string_("ERR CAP DUMP read_failed at_frame=" + std::to_string(frame) + "\n");
+      return;
+    }    const uint16_t crc =
+        diag_crc16(packet.data() + 2, DIAG_PACKET_HEADER - 2 + payload_bytes);
+    packet[DIAG_PACKET_HEADER + payload_bytes] = crc & 0xFF;
+    packet[DIAG_PACKET_HEADER + payload_bytes + 1] = (crc >> 8) & 0xFF;
+    if (!this->serial_write_(packet.data(), DIAG_PACKET_HEADER + payload_bytes + DIAG_PACKET_CRC)) {
+      // Host vanished mid-transfer: restore logging and wait for a fresh CAP DUMP.
+      esp_log_level_set("*", previous_esp_level);
+      esphome::logger::global_logger->set_log_level(previous_esphome_level);
+      ESP_LOGW(TAG, "Diag dump aborted: host stopped reading at frame %u", static_cast<unsigned>(frame));
+      return;
+    }
+    frame += chunk;
+  }
+
+  char tail[48];
+  snprintf(tail, sizeof(tail), "DIAG_DUMP_END frames=%u\n", static_cast<unsigned>(frame));
+  this->serial_write_string_(tail);
+  esp_log_level_set("*", previous_esp_level);
+  esphome::logger::global_logger->set_log_level(previous_esphome_level);
+  ESP_LOGI(TAG, "Diag dump complete: frames=%u from=%u", static_cast<unsigned>(frame),
+           static_cast<unsigned>(from_frame));
 }
 
 size_t AECSpeexDspComponent::play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) {
@@ -1350,6 +2104,13 @@ void AECSpeexDspMicrophone::loop() {
     const uint32_t dropped = this->dropped_bytes_.exchange(0);
     if (dropped != 0)
       ESP_LOGW(TAG, "Microphone handoff capacity exceeded: dropped %" PRIu32 " bytes", dropped);
+    xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+    const bool gated = this->barge_in_active_;
+    const bool open = this->captured_bytes_ < this->speech_until_byte_;
+    const size_t queued = this->buffered_bytes_;
+    xSemaphoreGive(this->buffer_mutex_);
+    if (gated)
+      ESP_LOGD(TAG, "Capture gate: open=%s queued=%u bytes", YESNO(open), static_cast<unsigned>(queued));
   }
   // A 16 ms minimum gives normal operation enough capacity for 16 kHz mono.
   // After a short UI/main-loop stall, drain a bounded number of queued blocks
@@ -1368,6 +2129,12 @@ void AECSpeexDspMicrophone::loop() {
     }
     const size_t count = std::min(this->buffered_bytes_, DELIVERY_BYTES);
     if (count == 0) {
+      xSemaphoreGive(this->buffer_mutex_);
+      break;
+    }
+    // Keep retained speech in the capture FIFO until every downstream block
+    // fits. This callback is installed on the main task before capture starts.
+    if (this->delivery_condition_ && !this->delivery_condition_(count)) {
       xSemaphoreGive(this->buffer_mutex_);
       break;
     }
@@ -1426,13 +2193,15 @@ void AECSpeexDspMicrophone::request_pre_roll() {
   xSemaphoreGive(this->buffer_mutex_);
 }
 
-void AECSpeexDspMicrophone::begin_pre_roll_replay() {
+size_t AECSpeexDspMicrophone::begin_pre_roll_replay() {
   if (this->is_failed())
-    return;
+    return 0;
   xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+  const size_t replay_bytes = this->buffered_bytes_;
   this->pre_roll_requested_ = false;
   this->utterance_active_ = true;
   xSemaphoreGive(this->buffer_mutex_);
+  return replay_bytes;
 }
 
 void AECSpeexDspMicrophone::discard_pending_audio() {
@@ -1440,7 +2209,7 @@ void AECSpeexDspMicrophone::discard_pending_audio() {
     return;
   xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
   this->pre_roll_requested_ = false;
-  this->utterance_active_ = false;
+  this->utterance_active_ = this->barge_in_active_;
   this->read_offset_ = 0;
   this->buffered_bytes_ = 0;
   xSemaphoreGive(this->buffer_mutex_);
@@ -1479,7 +2248,28 @@ void AECSpeexDspMicrophone::stop() {
   xSemaphoreGive(this->buffer_mutex_);
 }
 
-void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size) {
+bool AECSpeexDspMicrophone::set_barge_in_active(bool active) {
+  if (this->is_failed()) return false;
+  xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+  const bool changed = active != this->barge_in_active_;
+  if (changed) {
+    this->barge_in_active_ = active;
+    this->speech_until_byte_ = 0;
+    if (active) {
+      this->utterance_active_ = true;
+      this->buffered_bytes_ = 0;
+      this->read_offset_ = 0;
+      this->history_bytes_ = 0;
+      this->history_write_offset_ = 0;
+      this->last_enqueued_byte_ = this->captured_bytes_;
+    }
+  }
+  xSemaphoreGive(this->buffer_mutex_);
+  return changed;
+}
+
+void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size, bool near_end, bool echo_rejected) {
+  this->near_end_speech_.store(near_end);
   if (this->buffer_ == nullptr || this->buffer_mutex_ == nullptr)
     return;
   xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
@@ -1496,13 +2286,54 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size)
   const size_t history_count = std::min(data_size, HISTORY_BYTES);
   const uint8_t *history_data = data + data_size - history_count;
   const size_t history_first = std::min(history_count, HISTORY_BYTES - this->history_write_offset_);
-  memcpy(this->buffer_ + BUFFER_BYTES + this->history_write_offset_, history_data, history_first);
-  memcpy(this->buffer_ + BUFFER_BYTES, history_data + history_first, history_count - history_first);
+  // Opening a gate must not replay the preceding half-second of rejected TTS
+  // echo. Preserve candidate onset frames while confirmation is accumulating;
+  // use silence at echo-only positions, keeping the capture timeline intact.
+  if (this->barge_in_active_ && echo_rejected && !near_end) {
+    memset(this->buffer_ + BUFFER_BYTES + this->history_write_offset_, 0, history_first);
+    memset(this->buffer_ + BUFFER_BYTES, 0, history_count - history_first);
+  } else {
+    memcpy(this->buffer_ + BUFFER_BYTES + this->history_write_offset_, history_data, history_first);
+    memcpy(this->buffer_ + BUFFER_BYTES, history_data + history_first, history_count - history_first);
+  }
   this->history_write_offset_ = (this->history_write_offset_ + history_count) % HISTORY_BYTES;
   this->history_bytes_ = std::min(HISTORY_BYTES, this->history_bytes_ + history_count);
   if (this->listeners_ == 0 && !this->pre_roll_requested_) {
     xSemaphoreGive(this->buffer_mutex_);
     return;
+  }
+  if (this->barge_in_active_) {
+    // Decisions and hangover use capture positions, not main-loop wall time.
+    // Keep 1 s of trailing audio for remote endpointing (plus detector release).
+    const bool was_open = this->captured_bytes_ - data_size < this->speech_until_byte_;
+    if (near_end) this->speech_until_byte_ = this->captured_bytes_ + SAMPLE_RATE * sizeof(int16_t);
+    if (!near_end && !was_open) {
+      xSemaphoreGive(this->buffer_mutex_);
+      return;
+    }
+    if (!was_open) {
+      const uint64_t history_start = this->captured_bytes_ - this->history_bytes_;
+      constexpr size_t PRE_ROLL = 512 * SAMPLE_RATE / 1000 * sizeof(int16_t);
+      const uint64_t start = std::max(this->last_enqueued_byte_, std::max(history_start,
+          this->captured_bytes_ > PRE_ROLL ? this->captured_bytes_ - PRE_ROLL : uint64_t{0}));
+      const size_t count = this->captured_bytes_ - start;
+      if (count <= BUFFER_BYTES - this->buffered_bytes_) {
+        const size_t source = (this->history_write_offset_ + HISTORY_BYTES - count) % HISTORY_BYTES;
+        // Both rings can wrap independently; copying at most 512 ms happens
+        // only on an opening edge. The current frame is included exactly once.
+        if (this->buffered_bytes_ == 0) this->queue_start_byte_ = start;
+        for (size_t i = 0; i < count; ++i)
+          this->buffer_[(this->read_offset_ + this->buffered_bytes_ + i) % BUFFER_BYTES] =
+              this->buffer_[BUFFER_BYTES + (source + i) % HISTORY_BYTES];
+        this->buffered_bytes_ += count;
+      } else {
+        this->dropped_bytes_.fetch_add(count);
+      }
+      this->last_enqueued_byte_ = this->captured_bytes_;
+      xSemaphoreGive(this->buffer_mutex_);
+      return;
+    }
+    this->last_enqueued_byte_ = this->captured_bytes_;
   }
   // Idle wake-word detection should see recent audio after a UI stall.
   // During an utterance, preserve FIFO order and report capacity exhaustion.
@@ -1516,8 +2347,15 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size)
       this->queue_start_byte_ = this->captured_bytes_ - data_size;
     const size_t write_offset = (this->read_offset_ + this->buffered_bytes_) % BUFFER_BYTES;
     const size_t first = std::min(data_size, BUFFER_BYTES - write_offset);
-    memcpy(this->buffer_ + write_offset, data, first);
-    memcpy(this->buffer_, data + first, data_size - first);
+    // Keep endpointing silence after confirmed speech, not intelligible echo
+    // that would make the provider interrupt its replacement response again.
+    if (this->barge_in_active_ && echo_rejected && !near_end) {
+      memset(this->buffer_ + write_offset, 0, first);
+      memset(this->buffer_, 0, data_size - first);
+    } else {
+      memcpy(this->buffer_ + write_offset, data, first);
+      memcpy(this->buffer_, data + first, data_size - first);
+    }
     this->buffered_bytes_ += data_size;
   } else {
     this->dropped_bytes_.fetch_add(data_size);

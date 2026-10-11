@@ -130,6 +130,9 @@ void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *Yout, int len);
 
 /** Speex echo cancellation state. */
 struct SpeexEchoState_ {
+#if defined(SPEEX_MDF_DIAGNOSTICS) && !defined(FIXED_POINT)
+   SpeexMdfFrameDiagnostics frame_diagnostics;
+#endif
    int frame_size;           /**< Number of samples processed each time */
    int window_size;
    int M;
@@ -145,6 +148,8 @@ struct SpeexEchoState_ {
    spx_word16_t beta_max;
    spx_word32_t sum_adapt;
    spx_word16_t leak_estimate;
+   unsigned int shadow_promotions;
+   unsigned int shadow_resets;
 
    spx_word16_t *e;      /* scratch */
    spx_word16_t *x;      /* Far-end input buffer (2N) */
@@ -503,6 +508,8 @@ EXPORT SpeexEchoState *speex_echo_state_init_mc(int frame_size, int filter_lengt
    M = st->M = (filter_length+st->frame_size-1)/frame_size;
    st->cancel_count=0;
    st->sum_adapt = 0;
+   st->shadow_promotions = 0;
+   st->shadow_resets = 0;
    st->saturated = 0;
    st->screwed_up = 0;
    /* This is the default sampling rate */
@@ -654,6 +661,8 @@ EXPORT void speex_echo_state_reset(SpeexEchoState *st)
    st->saturated = 0;
    st->adapted = 0;
    st->sum_adapt = 0;
+   st->shadow_promotions = 0;
+   st->shadow_resets = 0;
    st->Pey = st->Pyy = FLOAT_ONE;
 #ifdef TWO_PATH
    st->Davg1 = st->Davg2 = 0;
@@ -792,6 +801,12 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
    K = st->K;
 
    st->cancel_count++;
+#if defined(SPEEX_MDF_DIAGNOSTICS) && !defined(FIXED_POINT)
+   st->frame_diagnostics.version = 1;
+   st->frame_diagnostics.frame_index++;
+   st->frame_diagnostics.valid = 0;
+   st->frame_diagnostics.reset_this_frame = 0;
+#endif
 #ifdef FIXED_POINT
    ss=DIV32_16(11469,M);
    ss_1 = SUB16(32767,ss);
@@ -1039,6 +1054,7 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
    /* Do we update? */
    if (update_foreground)
    {
+      st->shadow_promotions++;
       st->Davg1 = st->Davg2 = 0;
       st->Dvar1 = st->Dvar2 = FLOAT_ZERO;
       /* Copy background filter to foreground filter */
@@ -1063,6 +1079,7 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
          reset_background = 1;
       if (reset_background)
       {
+         st->shadow_resets++;
          /* Copy foreground filter to background filter */
 #ifdef FIXED_POINT
          for (i=0;i<N*M*C*K;i++)
@@ -1162,6 +1179,9 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
    {
       speex_warning("The echo canceller started acting funny and got slapped (reset). It swears it will behave now.");
       speex_echo_state_reset(st);
+#if defined(SPEEX_MDF_DIAGNOSTICS) && !defined(FIXED_POINT)
+      st->frame_diagnostics.reset_this_frame = 1;
+#endif
       return;
    }
 
@@ -1303,6 +1323,29 @@ EXPORT void speex_echo_cancellation(SpeexEchoState *st, const spx_int16_t *in, c
       st->sum_adapt = ADD32(st->sum_adapt,adapt_rate);
    }
 
+#if defined(SPEEX_MDF_DIAGNOSTICS) && !defined(FIXED_POINT)
+   /* Capture native locals after RER clamping and power_1 generation. These
+      coefficients are for the NEXT update; earlier weight updates consumed
+      the previous frame's power_1. All energies aggregate this shared state. */
+   {
+      SpeexMdfFrameDiagnostics *d = &st->frame_diagnostics;
+      double weighted = 0, weight = 0;
+      float maximum = 0;
+      d->Sxx=Sxx; d->Sdd=Sdd; d->Syy=Syy; d->See=See; d->Sey=Sey;
+      d->rer=RER; d->leak=st->leak_estimate;
+      for (i=0;i<=st->frame_size;i++) {
+         float w=st->Xf[i]>0 ? st->Xf[i] : 0;
+         float g=st->power_1[i]>0 ? st->power_1[i] : 0;
+         weighted+=(double)w*g; weight+=w;
+         if (g>maximum) maximum=g;
+      }
+      d->gain_mean=weight>0 ? weighted/weight : 0;
+      d->gain_max=maximum; d->gain_weight_sum=weight;
+      d->adapted=st->adapted; d->saturated=st->saturated;
+      d->valid=isfinite(Sxx) && isfinite(Sdd) && isfinite(Syy) && isfinite(See) &&
+               isfinite(Sey) && isfinite(RER) && isfinite(d->gain_mean) && See>0;
+   }
+#endif
    /* Keep a mono echo estimate for the single post-AEC preprocessor.  The
       upstream code indexed interleaved multichannel input as mono here,
       which made residual-echo suppression invalid whenever C > 1. */
@@ -1386,10 +1429,49 @@ void speex_echo_get_residual(SpeexEchoState *st, spx_word32_t *residual_echo, in
 
 }
 
+/* Read-only logical adaptation-state hash. Excludes pointers, scratch padding
+   and the optional snapshot; usable across otherwise identical host builds. */
+static uint64_t mdf_hash_bytes(uint64_t h, const void *ptr, size_t bytes) {
+   const unsigned char *p=(const unsigned char *)ptr;
+   size_t i; for(i=0;i<bytes;i++) { h^=p[i]; h*=UINT64_C(1099511628211); }
+   return h;
+}
+uint64_t speex_echo_state_checksum(const SpeexEchoState *st) {
+   uint64_t h=UINT64_C(1469598103934665603);
+#define HS(member) h=mdf_hash_bytes(h,&st->member,sizeof(st->member))
+#define HA(member,count) h=mdf_hash_bytes(h,st->member,(count)*sizeof(*st->member))
+   HS(cancel_count); HS(adapted); HS(saturated); HS(screwed_up);
+   HS(sum_adapt); HS(leak_estimate); HS(Pey); HS(Pyy);
+   HS(shadow_promotions); HS(shadow_resets);
+#ifndef FIXED_POINT
+   HS(X_head);
+#endif
+   HA(W,st->C*st->K*st->M*st->window_size);
+#ifdef TWO_PATH
+   HA(foreground,st->C*st->K*st->M*st->window_size);
+   HS(Davg1); HS(Davg2); HS(Dvar1); HS(Dvar2);
+#endif
+   HA(X,st->K*(st->M+1)*st->window_size); HA(x,st->K*st->window_size);
+   HA(power,st->frame_size+1); HA(power_1,st->frame_size+1);
+   HA(Eh,st->frame_size+1); HA(Yh,st->frame_size+1); HA(prop,st->M);
+   HA(memX,st->K); HA(memD,st->C); HA(memE,st->C); HA(notch_mem,2*st->C);
+   HA(last_y,st->window_size);
+#undef HS
+#undef HA
+   return h;
+}
+
 EXPORT int speex_echo_ctl(SpeexEchoState *st, int request, void *ptr)
 {
    switch(request)
    {
+      case SPEEX_ECHO_GET_MDF_FRAME_DIAGNOSTICS:
+#if defined(SPEEX_MDF_DIAGNOSTICS) && !defined(FIXED_POINT)
+         *(SpeexMdfFrameDiagnostics *)ptr=st->frame_diagnostics;
+         return 0;
+#else
+         return -1;
+#endif
       case SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS:
       {
          SpeexEchoResidualDiagnostics *d = (SpeexEchoResidualDiagnostics *)ptr;
@@ -1399,6 +1481,8 @@ EXPORT int speex_echo_ctl(SpeexEchoState *st, int request, void *ptr)
             energy += (double)st->last_y[i]*st->last_y[i];
          d->removed_rms = sqrt(energy/st->window_size);
          d->adapted = st->adapted;
+         d->shadow_promotions = st->shadow_promotions;
+         d->shadow_resets = st->shadow_resets;
 #ifdef FIXED_POINT
          d->leak = st->leak_estimate/32768.f;
 #else

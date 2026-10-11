@@ -1,5 +1,37 @@
 # AEC SpeexDSP for ESPHome
 
+The optional `neural_barge_in` detector implements the 84-input Bark/spatial
+Dense32/GRU24 recipe. When enabled, it supplies VAD only during playback with an
+active voice assistant; otherwise SpeexDSP supplies VAD and processed audio
+passes directly to WakeNet. Set `voice_assistant_active` to a boolean lambda.
+See the [GRU integration guide](../../../docs/neural-barge-in.md)
+for model provenance and verification.
+
+Optional diagnostic probability sensors expose each detector independently:
+
+```yaml
+sensor:
+  - platform: aec_speexdsp
+    aec_speexdsp_id: voice_audio
+    speex_vad_probability:
+      id: speex_vad_probability
+      name: "SpeexDSP VAD Probability"
+    gru_probability:
+      id: gru_barge_probability
+      name: "GRU Barge-In Probability"
+    update_interval: 500ms
+```
+
+Sensor values are percentages (0–100), sampled at the update interval. Either
+sensor can be omitted. LVGL/testing lambdas can read
+`id(speex_vad_probability).state` and `id(gru_barge_probability).state`.
+The GRU value is zero when inference is inactive, disabled or not compiled in;
+it does not trigger inference outside the assistant/playback scope. SpeexDSP
+continues reporting its own probability even while GRU supplies the VAD decision.
+Direct C++ getters `get_speex_vad_probability()` and
+`get_neural_barge_probability()` return 0–1; `get_vad_probability()` still returns
+the selected detector's probability. These sensors are optional; they do not enable neural inference or assistant interruption.
+
 `aec_speexdsp` is an ESPHome voice-assistant audio component that provides
 acoustic echo cancellation (AEC), noise suppression (NS), automatic gain
 control (AGC) and voice activity detection (VAD) using the open-source
@@ -141,6 +173,20 @@ stage uses Q15 linear interpolation. Invalid, weak, or ambiguous peaks retain
 the previous stable direction rather than steering on noise.
 
 ## Reference audio
+
+### Optional GRU barge-in detector
+
+Enable `neural_barge_in` only for an assistant integration that can keep its
+microphone live during responses and handle interruption. The detector uses
+two raw microphones and the synchronized reference to distinguish independent
+speech from playback echo. It does not itself stop the speaker or start an
+assistant pipeline. The [barge-in guide](../../../docs/neural-barge-in.md)
+explains routing, configuration, diagnostics and capture-gate integration.
+
+The bundled voice-assistant example deliberately does not enable barge-in;
+it suppresses microphone delivery during TTS and uses ordinary SpeexDSP VAD.
+Legacy `near_end` diagnostics remain available for installations without the
+neural feature. They are bypassed when the GRU feature is compiled in.
 
 Two reference sources are supported:
 
@@ -300,7 +346,7 @@ the paired ESP-IDF TDM RX/TX channels.
 | `resampler` | no | `false` | Enable the playback drift-compensating resampler around 16 kHz. |
 | `meters` | no | disabled | Compile an `AECSpeexDspMetersComponent`; accepts a nested component `id` and `enabled` (default `true`). Exposes per-slot RMS/peak, reference and cleaned-output levels, clipping/alternation stats, and a UI-gated 32-bin spectrum. |
 | `telemetry` | no | `false` | Compile `AEC_EFFECT` logging and one-second signal-stage diagnostics. |
-| `profiling` | no | `false` | Compile detailed per-stage CPU-cycle profiling counters. |
+| `profiling` | no | `false` | Compile detailed per-stage CPU-cycle counters and log the audio task's minimum free stack in bytes. |
 | `slot_logs` | no | `false` | Compile five-second raw-slot and output level logging. |
 | `diagnostics` | no | `false` | Compile five-second error, timing, buffer, and VAD statistics. |
 
@@ -349,10 +395,6 @@ esphome:
   through the speaker (delay/reference tuning aid).
 - `get_vad_state()` / `get_vad_probability()` — current speech activity of the
   primary processed channel.
-- `reset_audio_activity()` / `audio_silent_for(ms)` — inactivity
-  meters for barge-in policies (`VOICE_ASSISTANT_BARGE_IN`
-  is honoured).
-
 ## Tuning
 
 ### Reference-aware AGC gate
@@ -441,16 +483,14 @@ removal before the adaptive filter has learned the acoustic path.
 
 ## Residual echo investigation
 
-For a local barge-in listening test, flash `esp_1024_speexdsp_test.yaml`, select
-**DSP OUTPUT**, start **PLAY TEST AUDIO**, then press **RECORD 3 SECONDS** and
-speak over playback. Wait for the recording-ready message, then press
-**PLAY RECORDING** (this stops and clears test playback before replaying).
-Repeat once while silent and once with normal-volume speech. Capture copies
-the same final PCM buffer published to microphone listeners, after suppression
-and AGC, but does not include transport or remote processing. Selecting a raw
-source deliberately bypasses DSP; use DSP OUTPUT for this comparison.
-The test configuration matches the hall DSP settings, including reference-aware
-AGC gating and the 200 ms startup guard.
+For an AEC listening test, use the
+[audio-test example](../../../examples/waveshare-7b-audio-test/), select
+**DSP OUTPUT**, start **PLAY TEST AUDIO**, then press **RECORD 2 SECONDS** and
+speak over playback. Stop test playback before pressing **PLAY RECORDING**.
+Repeat while silent and with normal-volume speech. Capture records the final
+PCM after suppression/AGC, before transport or remote processing. Selecting a
+raw source deliberately bypasses DSP. This example tests cancellation and
+does not configure neural barge-in or an assistant interruption lifecycle.
 
 With `telemetry: true`, `AEC_RESIDUAL last_frame` reports a snapshot alongside
 the one-second RMS summaries. `removed_rms` is the two-frame removed-echo history;

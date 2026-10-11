@@ -219,6 +219,29 @@ int speex_preprocess_ctl(SpeexPreprocessState *st, int request, void *ptr);
 #define SPEEX_PREPROCESS_SET_AGC_GATE 1005
 #define SPEEX_PREPROCESS_SET_REFERENCE_RMS 1006
 #define SPEEX_PREPROCESS_GET_AGC_GATE_STATE 1007
+#define SPEEX_PREPROCESS_SET_NEAR_END_HINT 1008
+#define SPEEX_PREPROCESS_GET_NEAR_END_PROB 1009
+#define SPEEX_PREPROCESS_GET_NEAR_END_DIAGNOSTICS 1010
+#define SPEEX_PREPROCESS_SET_NEAR_END_PROTECTION 1011
+#define SPEEX_PREPROCESS_SET_REFERENCE_STATE 1012
+#define SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB 1013
+/* Per-frame snapshot supplied before preprocess_run; NULL restores legacy tracking. */
+typedef struct { int active, startup; } SpeexReferenceState;
+typedef struct {
+   float mic_error_correlation;
+   float echo_error_correlation;
+   float reference_power;
+   int reference_active;
+} SpeexNearEndHint;
+typedef struct {
+   float probability;
+   float instantaneous_probability;
+   float excess_probability;
+   float correlation_probability;
+   float path_change_probability;
+   float calibration_confidence;
+   float protected_probability;
+} SpeexNearEndDiagnostics;
 typedef struct {
    int enabled;
    float reference_open_rms, reference_close_rms, open_rms, close_rms;

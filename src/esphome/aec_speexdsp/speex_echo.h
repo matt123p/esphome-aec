@@ -123,10 +123,24 @@ void speex_echo_playback(SpeexEchoState *st, const spx_int16_t *play);
 void speex_echo_state_reset(SpeexEchoState *st);
 
 #define SPEEX_ECHO_GET_RESIDUAL_DIAGNOSTICS 1002
+
+/* Optional floating-point host/shadow tap. Disabled unless
+ * SPEEX_MDF_DIAGNOSTICS is defined; observation never changes adaptation. */
+#define SPEEX_ECHO_GET_MDF_FRAME_DIAGNOSTICS 1003
+#include <stdint.h>
+typedef struct {
+   uint32_t version, frame_index;
+   float Sxx, Sdd, Syy, See, Sey, rer, leak;
+   float gain_mean, gain_max, gain_weight_sum;
+   int adapted, saturated, reset_this_frame, valid;
+} SpeexMdfFrameDiagnostics;
+uint64_t speex_echo_state_checksum(const SpeexEchoState *st);
 typedef struct {
    int adapted;
    float leak;
    float removed_rms;
+   unsigned int shadow_promotions;
+   unsigned int shadow_resets;
 } SpeexEchoResidualDiagnostics;
 
 /** Override this frame's echo estimate after cancellation, before preprocessing.

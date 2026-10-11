@@ -39,7 +39,7 @@ It is a focused but complete Home Assistant voice satellite with:
 
 - local “Alexa” wake-word detection;
 - full-duplex AEC and rolling pre-buffer hand-off;
-- continuous conversation support;
+- one-request assistant sessions with TTS microphone suppression;
 - listening, thinking, replying, ready, and error states;
 - transcript and response text;
 - manual start/stop and persistent volume control; and

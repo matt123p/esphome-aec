@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased - 2026-10-11
+
+### Added
+
+- Optional raw84 Dense32/GRU24 barge-in detector trained on captured data
+  from the Waveshare 7B board using corrected acoustic labels. The model has
+  6,921 parameters and 16 causal frames; calibrated threshold 0.9995.
+- Exported model metadata, checkpoint/source/dataset/label hashes, held-session
+  split IDs and fitted normalizer/spatial state alongside firmware constants.
+- `neural_barge_in.voice_assistant_active` callback: GRU supplies VAD only when
+  the playback reference and assistant are both active. SpeexDSP supplies VAD
+  otherwise; ordinary playback audio passes to the wake-word listener.
+- Optional independent SpeexDSP VAD and GRU probability sensors and getters.
+- Capture-side history/gating, bounded microphone handoff, diagnostic/reference
+  observers and current Speex preprocessing/MDF controls from the latest module.
+- GRU usage/integration guide and host routing, sensor, microphone and model
+  configuration checks; neural preprocessor/inference probe target.
+
+### Changed
+
+- VAD decision and probability follow the selected detector. Neural inference
+  is scoped to assistant playback; feature statistics/context continue in all
+  valid states. No shadow setting, duck stage or detector cooldown is exposed.
+- Voice-assistant example uses a standard one-request lifecycle and retains
+  TTS microphone suppression. It deliberately does not enable barge-in or a
+  custom assistant engine; response interruption requires separate integration.
+
 ## v1.00 - 2026-09-20
 
 ### Added

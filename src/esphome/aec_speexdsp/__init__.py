@@ -32,6 +32,7 @@ CONF_PROFILING = "profiling"
 CONF_REFERENCE_SLOT = "reference_slot"
 CONF_REFERENCE_SOURCE = "reference_source"
 CONF_REFERENCE_DELAY_SAMPLES = "reference_delay_samples"
+CONF_AUTO_REFERENCE_ALIGNMENT = "auto_reference_alignment"
 CONF_RESAMPLER = "resampler"
 CONF_TDM_SLOTS = "tdm_slots"
 CONF_TX_SLOTS = "tx_slots"
@@ -57,12 +58,33 @@ OUTPUT_CHANNELS = {
 
 
 def _validate(config):
+    _resolve_reference_activity(config)
+    if "near_end" in config:
+        if not config[CONF_VAD]:
+            raise cv.Invalid("near_end requires vad: true")
+        if config[CONF_OUTPUT_CHANNEL] == "mixed" and not config[CONF_BEAMFORMING]["enabled"]:
+            raise cv.Invalid("near_end requires a single processed output or beamforming")
+        near = config["near_end"]
+        if near["startup_ms"] + near["onset_ms"] + 2 * config[CONF_FRAME_SIZE] / 16 > 512:
+            raise cv.Invalid("near_end startup + onset + two frames must fit the 512 ms pre-roll")
     agc_gate = config[CONF_AGC]["gate"]
     for opening, closing in [("open_rms", "close_rms"), ("reference_open_rms", "reference_close_rms")]:
         if agc_gate[opening] <= agc_gate[closing]:
             raise cv.Invalid(f"agc.gate.{opening} must be greater than {closing}")
     if agc_gate["enabled"] and not config[CONF_AGC]["enabled"]:
         raise cv.Invalid("agc.gate requires agc.enabled")
+    neural = config.get("neural_barge_in")
+    if neural and neural["enabled"]:
+        if config[CONF_FRAME_SIZE] != 256 or len(config[CONF_MICROPHONE_SLOTS]) != 2:
+            raise cv.Invalid("neural_barge_in requires frame_size: 256 and exactly two microphone_slots")
+        if not config[CONF_VAD]:
+            raise cv.Invalid("active neural_barge_in requires vad: true for idle speech")
+        if "voice_assistant_active" not in neural:
+            raise cv.Invalid("active neural_barge_in requires a voice_assistant_active lambda")
+        if config[CONF_OUTPUT_CHANNEL] == "mixed" and not config[CONF_BEAMFORMING]["enabled"]:
+            raise cv.Invalid("active neural_barge_in requires a single processed output or beamforming")
+        if config["capture_only"]:
+            raise cv.Invalid("neural_barge_in cannot run with capture_only")
     slots = config[CONF_TDM_SLOTS]
     selected = config[CONF_MICROPHONE_SLOTS]
     reference = config[CONF_REFERENCE_SLOT]
@@ -91,6 +113,31 @@ def _validate(config):
         )
     if config[CONF_BEAMFORMING]["enabled"] and len(selected) < 2:
         raise cv.Invalid("beamforming requires at least two microphone_slots")
+    return config
+
+
+def _resolve_reference_activity(config):
+    """Resolve explicit legacy aliases before filling defaults; never silently win conflicts."""
+    reference = config.setdefault("reference_activity", {})
+    gate = config[CONF_AGC]["gate"]
+    near = config.get("near_end")
+    for key, alias, default in [
+        ("open_rms", "reference_open_rms", 200),
+        ("close_rms", "reference_close_rms", 100),
+        ("tail_ms", "tail_ms", 250),
+        ("startup_ms", "startup_guard_ms", 200),
+    ]:
+        values = [mapping[name] for mapping, name in [(reference, key), (gate, alias)] if name in mapping]
+        if key == "startup_ms" and near is not None and "startup_ms" in near:
+            values.append(near["startup_ms"])
+        if values and any(value != values[0] for value in values):
+            raise cv.Invalid(f"Conflicting reference_activity.{key} and legacy AGC/near_end aliases")
+        value = values[0] if values else default
+        reference[key] = gate[alias] = value
+        if key == "startup_ms" and near is not None:
+            near[key] = value
+    if reference["open_rms"] <= reference["close_rms"]:
+        raise cv.Invalid("reference_activity.open_rms must be greater than close_rms")
     return config
 
 
@@ -140,18 +187,43 @@ CONFIG_SCHEMA = cv.All(
               cv.Optional("target_level", default=0.25): cv.float_range(min=0.01, max=1.0),
               cv.Optional("gate", default={}): cv.Schema({
                 cv.Optional("enabled", default=False): cv.boolean,
-                cv.Optional("reference_open_rms", default=200): cv.float_range(min=0.01, max=32768),
-                cv.Optional("reference_close_rms", default=100): cv.float_range(min=0.01, max=32768),
+                cv.Optional("reference_open_rms"): cv.float_range(min=0.01, max=32768),
+                cv.Optional("reference_close_rms"): cv.float_range(min=0.01, max=32768),
                 cv.Optional("open_rms", default=64): cv.float_range(min=0.01, max=32768),
                 cv.Optional("close_rms", default=32): cv.float_range(min=0.01, max=32768),
                 cv.Optional("open_delay_ms", default=32): cv.int_range(min=0, max=60000),
                 cv.Optional("hold_ms", default=250): cv.int_range(min=0, max=60000),
-                cv.Optional("tail_ms", default=250): cv.int_range(min=0, max=60000),
+                cv.Optional("tail_ms"): cv.int_range(min=0, max=60000),
                 cv.Optional("release_ms", default=150): cv.int_range(min=0, max=60000),
-                cv.Optional("startup_guard_ms", default=200): cv.int_range(min=0, max=60000),
+                cv.Optional("startup_guard_ms"): cv.int_range(min=0, max=60000),
               }),
             }),
             cv.Optional(CONF_VAD, default=True): cv.boolean,
+            cv.Optional("reference_activity", default={}): cv.Schema({
+                cv.Optional("open_rms"): cv.float_range(min=0.01, max=32768),
+                cv.Optional("close_rms"): cv.float_range(min=0.01, max=32768),
+                cv.Optional("tail_ms"): cv.int_range(min=0, max=60000),
+                cv.Optional("startup_ms"): cv.int_range(min=0, max=60000),
+            }),
+            cv.Optional("neural_barge_in"): cv.Schema({
+                cv.Optional("enabled", default=False): cv.boolean,
+                cv.Optional("voice_assistant_active"): cv.returning_lambda,
+                cv.Optional("threshold"): cv.float_range(min=0.000001, max=1),
+                cv.Optional("consecutive_frames", default=3): cv.int_range(min=1, max=32),
+                cv.Optional("speech_protection", default=False): cv.boolean,
+                cv.Optional("log_interval_ms", default=5000): cv.int_range(min=250, max=60000),
+            }),
+            cv.Optional("near_end"): cv.Schema({
+                cv.Optional("observe", default=False): cv.boolean,
+                cv.Optional("adaptive", default=False): cv.boolean,
+                cv.Optional("soft_suppression", default=False): cv.boolean,
+                cv.Optional("min_rms", default=24): cv.float_range(min=1, max=32767),
+                cv.Optional("margin_db", default=6): cv.float_range(min=0, max=30),
+                cv.Optional("echo_floor_db", default=-18): cv.float_range(min=-40, max=0),
+                cv.Optional("onset_ms", default=64): cv.int_range(min=16, max=250),
+                cv.Optional("release_ms", default=160): cv.int_range(min=0, max=500),
+                cv.Optional("startup_ms"): cv.int_range(min=0, max=250),
+            }),
             # Speex keeps its speech-continue probability at 20%; a start
             # threshold below that would never reset, so clamp the range.
             cv.Optional(CONF_VAD_THRESHOLD, default=35): cv.int_range(min=20, max=90),
@@ -159,6 +231,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ECHO_SUPPRESS_ACTIVE_DB, default=15): cv.int_range(min=5, max=60),
             cv.Optional(CONF_PLAYBACK_GAIN_DB, default=0.0): cv.float_range(min=-60.0, max=0.0),
             cv.Optional(CONF_REFERENCE_DELAY_SAMPLES, default=0): cv.int_range(min=0, max=4000),
+            cv.Optional(CONF_AUTO_REFERENCE_ALIGNMENT, default=False): cv.boolean,
             cv.Optional(CONF_RESAMPLER, default=False): cv.boolean,
             cv.Optional(CONF_METERS): cv.Schema(
                 {
@@ -170,6 +243,9 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_PROFILING, default=False): cv.boolean,
             cv.Optional("slot_logs", default=False): cv.boolean,
             cv.Optional("diagnostics", default=False): cv.boolean,
+            cv.Optional("serial_control", default=False): cv.boolean,
+            cv.Optional("diag_capture_max_seconds", default=30): cv.int_range(min=1, max=120),
+            cv.Optional("capture_only", default=False): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate,
@@ -193,8 +269,20 @@ async def to_code(config):
     if config.get("diagnostics", False):
         cg.add_define("USE_AEC_SPEEXDSP_DIAGNOSTICS")
 
+    if config.get("neural_barge_in", {}).get("enabled", False):
+        cg.add_define("USE_AEC_SPEEXDSP_NEURAL_BARGE_IN")
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
+    if config.get("neural_barge_in", {}).get("enabled", False):
+        neural = config["neural_barge_in"]
+        cg.add(var.configure_neural_barge_in(neural.get("threshold", 0),
+               neural["consecutive_frames"], neural["speech_protection"], neural["log_interval_ms"]))
+        if "voice_assistant_active" in neural:
+            active = await cg.process_lambda(neural["voice_assistant_active"], [], return_type=cg.bool_)
+            cg.add(var.set_voice_assistant_active_condition(active))
+    cg.add(var.set_serial_control_enabled(config["serial_control"]))
+    cg.add(var.set_diag_capture_max_seconds(config["diag_capture_max_seconds"]))
+    cg.add(var.set_capture_only(config["capture_only"]))
     adc = await cg.get_variable(config[CONF_AUDIO_ADC])
     cg.add(var.set_audio_adc(adc))
     cg.add(var.set_pins(
@@ -235,6 +323,16 @@ async def to_code(config):
         gate["open_rms"], gate["close_rms"], gate["open_delay_ms"], gate["hold_ms"], gate["tail_ms"], gate["release_ms"],
         gate["startup_guard_ms"]))
     cg.add(var.set_vad_enabled(config[CONF_VAD]))
+    reference = config["reference_activity"]
+    cg.add(var.configure_reference(reference["open_rms"], reference["close_rms"],
+                                   reference["tail_ms"], reference["startup_ms"]))
+    if "near_end" in config:
+        near = config["near_end"]
+        cg.add(var.set_observation_enabled(near["observe"]))
+        cg.add(var.set_adaptive_enabled(near["adaptive"]))
+        cg.add(var.set_soft_double_talk_enabled(near["soft_suppression"]))
+        cg.add(var.configure_near_end(near["min_rms"], near["margin_db"], near["echo_floor_db"],
+                                     near["onset_ms"], near["release_ms"], near["startup_ms"]))
     cg.add(var.set_vad_threshold(config[CONF_VAD_THRESHOLD]))
     cg.add(var.set_echo_suppress_db(config[CONF_ECHO_SUPPRESS_DB]))
     cg.add(var.set_echo_suppress_active_db(config[CONF_ECHO_SUPPRESS_ACTIVE_DB]))
@@ -242,6 +340,7 @@ async def to_code(config):
     if config[CONF_RESAMPLER]:
         cg.add_define("USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER")
     cg.add(var.set_reference_delay_samples(config[CONF_REFERENCE_DELAY_SAMPLES]))
+    cg.add(var.set_auto_reference_alignment(config[CONF_AUTO_REFERENCE_ALIGNMENT]))
 
     if meters_config := config.get(CONF_METERS):
         # The define makes the meter class available to generated UI lambdas.

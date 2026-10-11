@@ -7,6 +7,14 @@ title: Configuration Reference
 Start from the [known-good configuration]({{ '/getting-started/' | relative_url }})
 and change one setting at a time.
 
+## Optional GRU barge-in
+
+The latest component can select neural VAD only during playback with an active
+voice assistant. It is disabled by default. See the
+[GRU barge-in guide]({{ '/neural-barge-in/' | relative_url }}) for requirements,
+options, integration and independent probability sensors. The bundled voice
+assistant example does not enable this feature.
+
 ## `aec_speexdsp` hub
 
 | Option | Required | Default | Description |

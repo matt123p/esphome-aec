@@ -137,6 +137,8 @@ audio_dac:
 # =============================================================================
 aec_speexdsp:
   id: voice_audio
+  # Ordinary one-request assistant: no neural_barge_in or capture gate.
+  # TTS callbacks below suppress microphone delivery during responses.
 
   # --- Transport -------------------------------------------------------------
 
@@ -329,7 +331,7 @@ aec_speexdsp:
       startup_guard_ms: 200
 
   # Speex voice activity detection, evaluated on the published channel.
-  # State is exposed via id(audio_test).get_vad_state() and
+  # State is exposed via id(voice_audio).get_vad_state() and
   # .get_vad_probability(). Options: true / false.
   vad: true
 
@@ -399,7 +401,8 @@ micro_wake_word:
         id(assistant_state) = 1;
         id(assistant_detail) = "How can I help?";
     - script.execute: update_assistant_ui
-    - voice_assistant.start_continuous:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
 
 voice_assistant:
   id: voice_assistant_engine
@@ -454,6 +457,13 @@ voice_assistant:
     - lambda: id(voice_microphone).set_response_playing(false);
 
   on_end:
+    # RUN_END can precede speaker drain. Keep TTS muted and do not re-arm
+    # wake-word listening until the standard assistant finishes playback.
+    - wait_until:
+        condition:
+          lambda: |-
+            return !id(voice_assistant_engine).is_running() &&
+                   !id(voice_speaker).is_running() && !id(voice_speaker).has_buffered_data();
     - lambda: |-
         id(voice_microphone).set_response_playing(false);
         id(voice_microphone).discard_pending_audio();
@@ -503,7 +513,7 @@ script:
                 id(assistant_state) = 1;
                 id(assistant_detail) = "How can I help?";
             - script.execute: update_assistant_ui
-            - voice_assistant.start_continuous:
+            - voice_assistant.start:
           else:
             - lambda: |-
                 id(assistant_state) = 4;

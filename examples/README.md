@@ -16,7 +16,7 @@ Wi-Fi companion.
   and play a known test clip.
 - [Voice assistant](waveshare-7b-voice-assistant/) — a complete local-wake-word
   Home Assistant voice satellite with full-duplex AEC, rolling pre-buffer
-  hand-off, continuous conversation, recovery logic, volume control, and a
+  hand-off, one-request sessions, recovery logic, volume control, and a
   deliberately minimal touch UI.
 
 Each folder is self-contained apart from Wi-Fi secrets and external components

@@ -13,11 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install numpy (test signal generation)
-        run: python3 -m pip install numpy
+      - name: Install host test dependencies
+        run: python3 -m pip install numpy pytest
+
+      - name: Run module configuration and microphone/routing tests
+        run: python3 -m pytest -q tests/test_neural_barge_config.py tests/test_aec_microphone.py tests/test_aec_vad_routing.py
 
       - name: Run aec_speexdsp test suite
         run: bash tests/aec_speexdsp/run_tests.sh
+
+      - name: Run neural preprocessor probes
+        run: |
+          tests/aec_speexdsp/build/asan/neural_barge_probe < /dev/null
+          tests/aec_speexdsp/build/release/neural_barge_probe < /dev/null
 
       - name: Upload test logs
         if: always()

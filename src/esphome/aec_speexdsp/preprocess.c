@@ -218,6 +218,15 @@ struct SpeexPreprocessState_ {
 
    spx_word16_t	speech_prob;  /**< Probability last frame was speech */
 
+   /* Near-end observer. The Bark baseline is diagnostic unless explicit
+      protection is enabled through the public ctl. */
+   SpeexNearEndHint near_end_hint;
+   SpeexNearEndDiagnostics near_end_diagnostics;
+   float excess_mean[NB_BANDS], excess_variance[NB_BANDS];
+   unsigned int excess_frames;
+   int near_end_protection;
+   float neural_protect_probability;
+
    /* DSP-related arrays */
    spx_word16_t *frame;      /**< Processing frame (2*ps_size) */
    spx_word16_t *ft;         /**< Processing frame in freq domain (2*ps_size) */
@@ -259,6 +268,8 @@ struct SpeexPreprocessState_ {
    SpeexAgcGateConfig agc_gate;
    SpeexAgcGateState agc_gate_state;
    float reference_rms, reference_quiet_ms, gate_above_ms, gate_below_ms, gate_release_ms;
+   int external_reference;
+   SpeexReferenceState reference_state;
    float gate_startup_remaining_ms;
    float  max_gain;          /**< Maximum gain allowed */
    float  max_increase_step; /**< Maximum increase in gain from one frame to another */
@@ -609,7 +620,9 @@ static void speex_compute_agc(SpeexPreprocessState *st, spx_word16_t Pframe, spx
       const int was_active = s->reference_active;
       s->startup_guard = 0;
       s->rms = st->pre_agc_rms;
-      if (st->reference_rms >= g->reference_open_rms) {
+      if (st->external_reference) {
+         s->reference_active = st->reference_state.active;
+      } else if (st->reference_rms >= g->reference_open_rms) {
          s->reference_active = 1;
          st->reference_quiet_ms = 0;
       } else if (s->reference_active) {
@@ -630,7 +643,7 @@ static void speex_compute_agc(SpeexPreprocessState *st, spx_word16_t Pframe, spx
             st->gate_release_ms = g->release_ms;
             st->gate_startup_remaining_ms = g->startup_guard_ms;
          }
-         if (st->gate_startup_remaining_ms > 0) {
+         if (st->external_reference ? st->reference_state.startup : st->gate_startup_remaining_ms > 0) {
             // Protect the entire onset frame; preserve existing attenuation.
             // Confirmation starts afresh after the guard, not during it.
             s->startup_guard = 1;
@@ -826,6 +839,7 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
    spx_word16_t Pframe;
    spx_word16_t beta, beta_1;
    spx_word16_t effective_echo_suppress;
+   float protect_probability;
 
    st->nb_adapt++;
    if (st->nb_adapt>20000)
@@ -938,7 +952,75 @@ EXPORT int speex_preprocess_run(SpeexPreprocessState *st, spx_int16_t *x)
       Zframe = ADD32(Zframe, EXTEND32(st->zeta[i]));
    Pframe = QCONST16(.1f,15)+MULT16_16_Q15(QCONST16(.899f,15),qcurve(DIV32_16(Zframe,st->nbands)));
 
-   effective_echo_suppress = EXTRACT16(PSHR32(ADD32(MULT16_16(SUB16(Q15_ONE,Pframe), st->echo_suppress), MULT16_16(Pframe, st->echo_suppress_active)),15));
+#ifndef FIXED_POINT
+   {
+      float strongest[8] = {0};
+      float excess = 0.f;
+      const float dt = (float)st->frame_size / MAX32(1, st->sampling_rate);
+      const float down_rate = 1.f-expf(-dt/.5f);
+      const float up_rate = 1.f-expf(-dt/10.f);
+      const float previous_near = st->near_end_diagnostics.probability;
+      for (i=0;i<M;i++) {
+         const int band = N+i;
+         const float base = st->echo_noise[band] + st->noise[band] + 1.f;
+         const float log_ratio = logf((ps[band]+1.f)/base);
+         if (st->excess_frames == 0) {
+            st->excess_mean[i] = log_ratio;
+            st->excess_variance[i] = 1.f;
+         }
+         {
+            const float delta = log_ratio-st->excess_mean[i];
+            const float echo_presence = st->echo_noise[band]/base;
+            const float rate = delta < 0.f ? down_rate : up_rate*(1.f-previous_near)*echo_presence;
+            const float z = MAX32(0.f, delta/sqrtf(MAX32(.05f, st->excess_variance[i])));
+            const float p = 1.f-expf(-.5f*z*z);
+            int j;
+            st->excess_mean[i] += rate*delta;
+            st->excess_variance[i] += rate*(delta*delta-st->excess_variance[i]);
+            for (j=0;j<8;j++) if (p > strongest[j]) {
+               int k;
+               for (k=7;k>j;k--) strongest[k]=strongest[k-1];
+               strongest[j]=p;
+               break;
+            }
+         }
+      }
+      for (i=0;i<8;i++) excess += strongest[i];
+      excess *= .125f;
+      st->excess_frames++;
+
+      {
+         const float cde = MIN32(1.f, MAX32(0.f, st->near_end_hint.mic_error_correlation));
+         const float cye = MIN32(1.f, MAX32(0.f, st->near_end_hint.echo_error_correlation));
+         float x = MIN32(1.f, MAX32(0.f, (cde-cye-.06f)/.24f));
+         float path_x = MIN32(1.f, MAX32(0.f, (cye-cde-.05f)/.25f));
+         float path_abs = MIN32(1.f, MAX32(0.f, (cye-.45f)/.40f));
+         const float path_relative = path_x*path_x*(3.f-2.f*path_x);
+         const float path_absolute = path_abs*path_abs*(3.f-2.f*path_abs);
+         const float path = MAX32(path_relative, path_absolute);
+         const float corr = x*x*(3.f-2.f*x)*(1.f-.8f*path);
+         const float instant = 1.f-(1.f-corr)*(1.f-.10f*excess);
+         const float attack = 1.f-expf(-dt/.025f);
+         const float release = 1.f-expf(-dt/.250f);
+         const float smooth_rate = instant > previous_near ? attack : release;
+         const float smoothed = previous_near + smooth_rate*(instant-previous_near);
+         st->near_end_diagnostics.instantaneous_probability = instant;
+         st->near_end_diagnostics.probability = MIN32(1.f, MAX32(0.f, smoothed));
+         st->near_end_diagnostics.excess_probability = excess;
+         st->near_end_diagnostics.correlation_probability = corr;
+         st->near_end_diagnostics.path_change_probability = path;
+         st->near_end_diagnostics.calibration_confidence = MIN32(1.f, st->excess_frames*dt/2.f);
+      }
+   }
+   protect_probability = st->near_end_protection ? MAX16(Pframe, MAX16(
+       st->near_end_diagnostics.instantaneous_probability, st->near_end_diagnostics.probability)) : Pframe;
+   protect_probability = MAX16(protect_probability, st->neural_protect_probability);
+   st->near_end_diagnostics.protected_probability = protect_probability;
+#else
+   protect_probability = Pframe;
+#endif
+
+   effective_echo_suppress = EXTRACT16(PSHR32(ADD32(MULT16_16(SUB16(Q15_ONE,protect_probability), st->echo_suppress), MULT16_16(protect_probability, st->echo_suppress_active)),15));
 #ifndef FIXED_POINT
    st->diagnostic_frame_probability = Pframe;
    st->diagnostic_echo_suppress = effective_echo_suppress;
@@ -1268,6 +1350,33 @@ EXPORT int speex_preprocess_ctl(SpeexPreprocessState *state, int request, void *
       return 0;
    case SPEEX_PREPROCESS_GET_AGC_GATE_STATE:
       *(SpeexAgcGateState *)ptr = st->agc_gate_state;
+      return 0;
+   case SPEEX_PREPROCESS_SET_NEAR_END_HINT:
+      if (ptr == NULL) {
+         memset(&st->near_end_hint, 0, sizeof(st->near_end_hint));
+      } else {
+         const SpeexNearEndHint *hint = (const SpeexNearEndHint *)ptr;
+         if (!isfinite(hint->mic_error_correlation) || !isfinite(hint->echo_error_correlation) ||
+             !isfinite(hint->reference_power) || hint->reference_power < 0) return -1;
+         st->near_end_hint = *hint;
+      }
+      return 0;
+   case SPEEX_PREPROCESS_GET_NEAR_END_PROB:
+      *(float *)ptr = st->near_end_diagnostics.probability;
+      return 0;
+   case SPEEX_PREPROCESS_GET_NEAR_END_DIAGNOSTICS:
+      *(SpeexNearEndDiagnostics *)ptr = st->near_end_diagnostics;
+      return 0;
+   case SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB:
+      if (ptr == NULL || !isfinite(*(float *)ptr) || *(float *)ptr < 0 || *(float *)ptr > 1) return -1;
+      st->neural_protect_probability = *(float *)ptr;
+      return 0;
+   case SPEEX_PREPROCESS_SET_NEAR_END_PROTECTION:
+      st->near_end_protection = *(int *)ptr != 0;
+      return 0;
+   case SPEEX_PREPROCESS_SET_REFERENCE_STATE:
+      st->external_reference = ptr != NULL;
+      if (ptr != NULL) st->reference_state = *(SpeexReferenceState *)ptr;
       return 0;
    case SPEEX_PREPROCESS_GET_PRE_AGC_RMS:
       *(float *)ptr = st->pre_agc_rms;

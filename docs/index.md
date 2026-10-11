@@ -24,6 +24,10 @@ speaker endpoints.
   capture, preserving the beginning of the user's request when the integration
   invokes the hand-off API.
 
+See [optional GRU barge-in detection]({{ '/neural-barge-in/' | relative_url }})
+for interruptible assistant integrations. The supplied assistant example
+keeps barge-in disabled and suppresses microphone delivery during TTS.
+
 ## Why SpeexDSP
 
 `aec_speexdsp` is built on the open-source
