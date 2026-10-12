@@ -21,6 +21,14 @@ voice assistant. It is disabled by default. See the
 options, integration and independent probability sensors. The bundled voice
 assistant example does not enable this feature.
 
+For full-duplex integration, enable `neural_barge_in.speech_protection: true`
+and arm the microphone's barge-in gate. The unreleased implementation protects
+onset using GRU probability, then holds full neural protection for the capture
+gate's existing hold-over and early playback-restart cut-off. Outside the
+armed neural assistant/playback scope it restores normal Speex processing.
+See [speech protection]({{ '/neural-barge-in/' | relative_url }}#speech-protection-unreleased);
+the fix is not included in the existing `v1.01` tag.
+
 ## `aec_speexdsp` hub
 
 | Option | Required | Default | Description |

@@ -241,6 +241,50 @@ int main() {
   assert(pause.output().size()==6*512);
   assert(pause.output().back()==43);
  }
+ // Protection previews the SAME capture position/restart rule as delivery.
+ // Wall-clock stalls and repeated provider starts cannot extend/truncate it.
+ {
+  Mic protect; protect.setup(); protect.start();
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==0.f);
+  protect.set_barge_in_active(true);
+  auto frame = [&](bool near, bool playing) {
+    std::vector<uint8_t> v(512,42);
+    protect.publish(v.data(),v.size(),near,!near,playing);
+  };
+  assert(protect.get_barge_in_speech_protection(.7f,false,true)==.7f); // onset
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==1.f); // first confirmation
+  frame(true,true);
+  clock_ms+=5000; // hold is measured in capture samples, not elapsed wall time
+  assert(!protect.set_barge_in_active(true)); // flush is idempotent
+  for(int i=0;i<63;i++) {
+    assert(protect.get_barge_in_speech_protection(.01f,false,true)==1.f);
+    frame(false,true);
+  }
+  const auto queued=protect.queued();
+  assert(protect.get_barge_in_speech_protection(.01f,false,true)==.01f);
+  frame(false,true);assert(protect.queued()==queued); // exact same expiry frame
+  frame(true,true);
+  for(int i=0;i<4;i++) frame(false,false);
+  assert(protect.get_barge_in_speech_protection(.02f,false,true)==1.f); // short gap
+  frame(false,true);
+  for(int i=0;i<19;i++) frame(false,false); // 304 ms: replacement cancels hold
+  const auto before_restart=protect.queued();
+  assert(protect.get_barge_in_speech_protection(.02f,false,true)==.02f);
+  frame(false,true);assert(protect.queued()==before_restart);
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==1.f);
+  frame(true,true); // fresh confirmation reopens
+  protect.set_barge_in_active(false);
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==0.f);
+  frame(false,true); // ordinary capture is no longer gated
+  protect.set_barge_in_active(true);
+  assert(protect.get_barge_in_speech_protection(.02f,false,true)==.02f); // no stale hold
+  protect.set_response_playing(true);
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==0.f);
+  protect.set_response_playing(false);
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==0.f); // acoustic tail
+  clock_ms+=300;
+  assert(protect.get_barge_in_speech_protection(.9f,true,true)==1.f);
+ }
  // Cancel an armed handoff and verify later wake-word delivery resumes.
  m.request_pre_roll(); m.frame(8); m.discard_pending_audio();
  m.output().clear(); m.frame(43); m.tick();

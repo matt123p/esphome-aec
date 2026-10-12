@@ -17,6 +17,7 @@ def test_playback_assistant_truth_table_and_transitions(tmp_path):
     select = source.split('#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN\n    if (this->neural_controls_audio_())', 1)[1].split('#ifdef USE_AEC_SPEEXDSP_TELEMETRY', 1)[0]
     select = '#ifdef USE_AEC_SPEEXDSP_NEURAL_BARGE_IN\n    if (this->neural_controls_audio_())' + select
     publish = source.split('void AECSpeexDspComponent::publish_frame_', 1)[1].split('void AECSpeexDspComponent::capture_frame_', 1)[0]
+    protection = '    float neural_protect = 0.f;' + source.split('    float neural_protect = 0.f;', 1)[1].split('#endif', 1)[0]
     code = r'''
 #define USE_AEC_SPEEXDSP_NEURAL_BARGE_IN
 #include <atomic>
@@ -28,8 +29,11 @@ def test_playback_assistant_truth_table_and_transitions(tmp_path):
 using spx_int32_t = int;
 constexpr int SPEEX_PREPROCESS_SET_NEAR_END_HINT=0, SPEEX_PREPROCESS_SET_NEAR_END_PROTECTION=1,
  SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE=2, SPEEX_PREPROCESS_GET_PROB=3;
+constexpr int SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB=4;
+float sent_protection=-1.f;
 int speex_preprocess_ctl(void *, int request, void *value) {
  if(request==SPEEX_PREPROCESS_GET_PROB) *static_cast<int *>(value)=37;
+ if(request==SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB) sent_protection=*static_cast<float *>(value);
  return 0;
 }
 int millis() { return 0; }
@@ -44,6 +48,10 @@ struct Detector {
 struct Microphone {
  bool vad=false, rejected=false; size_t bytes=0;
  bool playback=false;
+ bool barge_active=true, hold=false;
+ float get_barge_in_speech_protection(float p, bool confirmed, bool) {
+  return barge_active ? (confirmed||hold ? 1.f : p) : 0.f;
+ }
  void publish(const uint8_t *, size_t n, bool v, bool r, bool p) { bytes+=n; vad=v; rejected=r; playback=p; }
 };
 struct AECSpeexDspComponent {
@@ -51,6 +59,7 @@ struct AECSpeexDspComponent {
  Microphone mic; Microphone *microphone_=&mic;
  std::atomic<bool> neural_enabled_requested_{true}, voice_assistant_active_{false};
  bool neural_enabled_=true, neural_barge_active_=false, near_end_enabled_=true, neural_reference_active_=false;
+ bool neural_protection_=true;
  bool soft_double_talk_enabled_=true; int echo_suppress_active_db_=25;
  Resettable near_end_detector_, near_end_correlation_, cancellation_quality_, soft_double_talk_;
  std::vector<void *> preprocess_state_{reinterpret_cast<void *>(1)};
@@ -65,7 +74,7 @@ struct AECSpeexDspComponent {
     code += 'unsigned neural_time_us=0, neural_frames=0, neural_peak_us=0, neural_last_log=0;\n'
     code += 'float neural_prob_min=0, neural_prob_max=0, neural_prob_sum=0; unsigned neural_prob_frames=0, neural_candidate_frames=0, neural_confirmed_frames=0;\n'
     code += gate
-    code += 'struct { bool confirmed; float probability; } neural{confirmed,.91f};\n' + select
+    code += 'struct { bool confirmed; float probability; } neural{confirmed,.91f};\n' + protection + select
     code += 'int16_t pcm[256]{}; publish_frame_(pcm,256); }\n};\n'
     code += 'void AECSpeexDspComponent::publish_frame_' + publish
     code += r'''
@@ -75,6 +84,7 @@ int main() {
  for(bool playback : {false,true}) for(bool assistant : {false,true}) {
   const bool use_neural=playback&&assistant;
   c.frame(playback,assistant,true,false);
+  assert(sent_protection==(use_neural?.91f:0.f));
   assert(c.neural_barge_active_==use_neural);
   assert(c.mic.playback==playback);
   assert(c.vad_state_==!use_neural);
@@ -83,9 +93,20 @@ int main() {
   assert(c.vad_probability_==(use_neural?.91f:.37f));
   assert(c.speex_vad_probability_==.37f);
   c.frame(playback,assistant,false,true);
+  assert(sent_protection==(use_neural?1.f:0.f));
   assert(c.vad_state_==use_neural);
   assert(!c.mic.rejected);
  }
+ c.mic.hold=true;
+ c.frame(true,true,false,false);assert(sent_protection==1.f);
+ c.frame(true,false,false,false);assert(sent_protection==0.f); // VA inactive
+ c.frame(false,true,false,false);assert(sent_protection==0.f); // no playback
+ c.mic.barge_active=false;
+ c.frame(true,true,false,true);assert(sent_protection==0.f); // barge-in disabled
+ c.mic.barge_active=true;
+ c.neural_protection_=false;
+ c.frame(true,true,false,true);assert(sent_protection==0.f); // opt-out
+ c.neural_protection_=true;c.mic.hold=false;
  // Candidate onset is retained in history without opening live delivery.
  c.frame(true,true,false,false,-1,true);
  assert(!c.mic.vad && !c.mic.rejected);
@@ -98,6 +119,7 @@ int main() {
  c.frame(true,false,false,true); assert(c.detector.resets==resets);
  c.frame(true,true,false,false); assert(c.detector.resets==resets);
  c.neural_enabled_requested_=false; c.frame(true,true,true,false);
+ assert(sent_protection==0.f); // live neural disable clears protection
  assert(c.vad_state_ && !c.mic.rejected);
  c.neural_enabled_requested_=true; c.frame(true,true,true,false);
  assert(!c.vad_state_ && c.mic.rejected);

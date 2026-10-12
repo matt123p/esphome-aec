@@ -548,6 +548,9 @@ class AECSpeexDspMicrophone : public microphone::Microphone, public Component {
   // Enable only for the full-duplex response. Repeated flush/start notifications
   // are idempotent and must not truncate a user utterance already in progress.
   bool set_barge_in_active(bool active);
+  // Called before preprocessing this capture frame. Uses the delivery gate's
+  // capture position and playback restart policy, without advancing either.
+  float get_barge_in_speech_protection(float probability, bool confirmed, bool playback_active);
   bool is_near_end_speech() const { return this->near_end_speech_.load(); }
   void set_delivery_condition(std::function<bool(size_t)> condition) { this->delivery_condition_ = std::move(condition); }
   uint8_t get_listener_count() const { return this->listeners_.load(); }
@@ -558,6 +561,9 @@ class AECSpeexDspMicrophone : public microphone::Microphone, public Component {
   static constexpr size_t BUFFER_BYTES = 16000 * sizeof(int16_t) * 4;
   static constexpr size_t DELIVERY_BYTES = 1024;
   static constexpr size_t HISTORY_BYTES = 16000 * sizeof(int16_t);
+  static constexpr size_t RESTART_SILENCE_BYTES = 16000 * sizeof(int16_t) * 300 / 1000;
+  bool barge_in_playback_restarted_(bool playback_active) const;
+  bool barge_in_hold_open_(bool playback_active) const;
   AECSpeexDspComponent *parent_{nullptr};
   std::atomic<uint8_t> listeners_{0};
   SemaphoreHandle_t buffer_mutex_{nullptr};

@@ -28,6 +28,13 @@ Hardware-reference samples reach AEC directly from the synchronized TDM capture.
 includes full-duplex capture and API recovery fixes; see the
 [GRU integration guide](docs/neural-barge-in.md). These changes are included in `v1.01`.
 
+The unreleased development version aligns neural speech protection with the
+capture gate's hold-over and early cancellation. For full-duplex barge-in, set
+`neural_barge_in.speech_protection: true`; normal Speex processing resumes outside
+that scope. This fix is not part of the existing `v1.01` tag. See the
+[Unreleased changelog](changelog.md#unreleased) and
+[speech-protection guide](docs/neural-barge-in.md#speech-protection-unreleased).
+
 ## Why use it?
 
 - **True full-duplex audio** — keep listening for speech while a response,

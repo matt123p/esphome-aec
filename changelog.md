@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- With `neural_barge_in.speech_protection: true`, confirmed barge-in now
+  holds full neural residual-echo protection for the microphone capture gate's
+  existing one-second hold-over, preserving weak words when probability dips.
+- Protection and microphone delivery share the capture-position and playback
+  restart rules. Playback resuming after at least 300 ms of reference silence
+  cuts the inherited hold-over short; short gaps and repeated flush/start
+  callbacks do not reset it. Queued user audio remains intact.
+- Extra neural protection is cleared outside an armed barge-in capture gate
+  during enabled neural assistant/playback scope. Normal Speex preprocessing
+  resumes when barge-in, neural inference, assistant activity or playback scope
+  is disabled. Echo cancellation continues throughout.
+
+### Documentation and validation
+
+- Full-duplex integration examples recommend `speech_protection: true` and
+  explain onset protection, confirmed hold-over and normal Speex fallback.
+- Added host regression coverage for exact capture-frame expiry, weak words,
+  early cancellation, short gaps, repeated starts and protection scope changes.
+
 ## v1.01 - 2026-10-11
 
 ### Fixed

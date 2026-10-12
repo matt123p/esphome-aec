@@ -110,6 +110,15 @@ platform cannot infer those transitions on its own. Full-duplex barge-in uses
 the separate capture-gate policy described in the
 [GRU guide]({{ '/neural-barge-in/' | relative_url }}#capture-gate-and-assistant-integration).
 
+In the unreleased implementation, enabled neural speech protection reads this
+same capture-gate state before Speex preprocessing. Confirmation holds full
+protection through the existing one-second hold-over, while playback restart
+after at least 300 ms of reference silence cuts both policies short on the
+same frame. There is no second timer. Onset uses neural probability before
+confirmation; outside the armed gate and enabled neural assistant/playback
+scope, the extra probability is zero and ordinary Speex processing resumes.
+AEC remains active throughout.
+
 ## Playback, automatic rate matching, and reference
 
 The ESPHome speaker accepts signed 16-bit, 16 kHz mono or stereo PCM and holds

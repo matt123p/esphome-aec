@@ -16,6 +16,13 @@ probability sensors expose both detectors. A confirmed capture gate retains
 candidate onset and continuous cleaned speech through its one-second hangover;
 playback resumption after 300 ms of reference silence cancels the old tail.
 
+With `neural_barge_in.speech_protection: true`, the development version uses
+neural probability to protect onset before confirmation, then holds full
+protection for that same capture-gate window and early cut-off. Protection
+requires the armed barge-in gate and enabled neural assistant/playback scope;
+outside that scope, Speex uses its normal speech probability. Echo cancellation
+keeps running. This hold-over fix is unreleased and is not in `v1.01`.
+
 - [Installation](../../../docs/getting-started.md)
 - [Configuration](../../../docs/configuration.md)
 - [Architecture and microphone handoff](../../../docs/architecture.md)

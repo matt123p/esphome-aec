@@ -61,6 +61,23 @@ For hardware bring-up problems (blank display, undetected codecs, silent
 slots, a reference that behaves like a microphone), see the troubleshooting
 section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
 
+## Barge-in detected, but playback does not stop promptly
+
+Local confirmation only releases microphone audio. The provider must hear an
+intelligible utterance, accept it as an interruption, and send a playback flush
+through Core. Compare confirmation/capture-gate logs, uploaded PCM levels,
+provider transcription/interruption events and the device's flush log.
+
+For full duplex, enable `neural_barge_in.speech_protection: true` and arm the
+capture gate. The unreleased fix holds neural protection over the same capture
+window as delivery, including early cancellation on replacement playback.
+Without protection, raw-microphone detection can open delivery while Speex
+still suppresses the user's voice in the processed PCM. A faint upload is a
+diagnostic clue, not proof that suppression caused the delay. See
+[speech protection]({{ '/neural-barge-in/' | relative_url }}#speech-protection-unreleased).
+Do not combine full duplex with `set_response_playing(true)`, which excludes
+response audio from microphone delivery and history.
+
 ## Current limitations
 
 - The transport requires ESP-IDF TDM support: original ESP32 and ESP32-S2

@@ -16,7 +16,9 @@ session interruptible by itself: the assistant/provider must implement that
 response lifecycle. The optional bundled assistant engine requires separate
 configuration, as described below.
 
-This feature is included in release `v1.01`.
+The detector is included in release `v1.01`. The shared speech-protection
+hold-over described below is an unreleased development change; it is not part
+of the existing `v1.01` tag.
 
 ## How VAD is selected
 
@@ -55,7 +57,7 @@ aec_speexdsp:
     enabled: true
     voice_assistant_active: !lambda return id(voice_assistant_engine).is_running();
     consecutive_frames: 3
-    speech_protection: false
+    speech_protection: true  # Preserve speech sent during full-duplex playback.
     log_interval_ms: 5000
     # Omit threshold to use the checkpoint's calibrated 0.9995.
 ```
@@ -73,7 +75,7 @@ feature that was not compiled in.
 | `voice_assistant_active` | Required when enabled | Boolean lambda defining the active assistant session. |
 | `threshold` | Exported model value, `0.9995` | Probability cutoff (0–1); a YAML override replaces calibration. |
 | `consecutive_frames` | `3` | Consecutive qualifying frames, range 1–32, before confirmation. |
-| `speech_protection` | `false` | Use GRU probability to protect near speech in the Speex preprocessor during barge-in scope. |
+| `speech_protection` | `false` | Enable neural residual-echo protection. In the development version, onset uses GRU probability and confirmed speech follows the capture gate's hold-over and early cut-off. Requires an armed barge-in gate and active neural assistant/playback scope. |
 | `log_interval_ms` | `5000` | Sampled diagnostic logs; minimum 250 ms. |
 
 Hardware reference samples reach the detector directly from their TDM slot. Validate reference integrity and assistant-only
@@ -110,6 +112,42 @@ For an ordinary non-barge-in session, use `set_response_playing(true)` during
 TTS and release it when the response completes. This suppresses response audio
 and its acoustic tail from delivery/history. Do not combine that muting policy
 with a full-duplex response that needs to hear interruptions.
+
+## Speech protection (unreleased)
+
+For a full-duplex response, enable `neural_barge_in.speech_protection: true`
+and arm the microphone with `set_barge_in_active(true)`. The setting remains
+opt-in (`false` by default). Opening delivery alone does not protect the audio:
+the GRU examines raw microphones, but the provider hears post-Speex PCM.
+
+Before confirmation, GRU probability relaxes residual echo suppression to
+preserve onset candidates in history. On the confirming frame, protection
+reaches full strength. It stays at full strength for the capture gate's
+one-second trailing window even when probability falls during weak words or
+pauses. The preprocessor reads the gate's capture position before processing
+each frame; it does not maintain a separate wall-clock timer.
+
+When playback resumes after at least 300 ms of reference silence, both
+protection and delivery cancel the inherited hold-over on that same frame.
+Fresh confirmation can reopen it. Short gaps and repeated flush/start calls
+do not truncate an ongoing utterance, and queued user PCM is retained.
+Candidate protection does not retroactively reconstruct audio already
+suppressed before the detector found evidence of speech.
+
+The extra probability is zero outside the armed barge-in gate during enabled
+neural assistant/playback scope, including neural disable, inactive assistant,
+and no active playback reference. Speex then uses its normal speech
+probability and suppression settings. Echo cancellation, noise suppression
+and AGC remain in operation; full neural protection selects the configured
+active-speech residual echo suppression, rather than bypassing DSP or sending
+raw microphones. Check intelligibility and assistant-only false triggers at
+your intended volume.
+
+This fix is currently available in the local development checkout only. The
+`ref: v1.01` snippet below loads the released implementation, without the shared
+hold-over fix. To test the local checkout, use a local external component
+source pointing to `src/esphome`; after publication, pin the commit or release
+containing the fix.
 
 ## Independent probabilities for testing
 

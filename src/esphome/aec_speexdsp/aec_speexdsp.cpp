@@ -716,7 +716,13 @@ void AECSpeexDspComponent::run_audio_task_() {
       neural_prob_min = INFINITY; neural_prob_max = neural_prob_sum = 0.f; neural_prob_frames = 0;
       neural_candidate_frames = neural_confirmed_frames = 0;
     }
-    float neural_protect = this->neural_protection_ && this->neural_controls_audio_() ? neural.probability : 0.f;
+    // Use this frame's confirmation plus the capture FIFO's existing hold-over.
+    // Do not run an independent timer: replacement playback can end that hold
+    // early. Zero restores ordinary Speex processing outside neural scope.
+    float neural_protect = 0.f;
+    if (this->neural_protection_ && this->neural_controls_audio_() && this->microphone_ != nullptr)
+      neural_protect = this->microphone_->get_barge_in_speech_protection(
+          neural.probability, neural.confirmed, reference_frame.active);
     for (auto *pre : this->preprocess_state_)
       if (pre) speex_preprocess_ctl(pre, SPEEX_PREPROCESS_SET_NEURAL_PROTECT_PROB, &neural_protect);
 #endif
@@ -2256,17 +2262,43 @@ bool AECSpeexDspMicrophone::set_barge_in_active(bool active) {
   return changed;
 }
 
+bool AECSpeexDspMicrophone::barge_in_playback_restarted_(bool playback_active) const {
+  return playback_active && !this->playback_active_ && this->playback_silence_bytes_ >= RESTART_SILENCE_BYTES;
+}
+
+bool AECSpeexDspMicrophone::barge_in_hold_open_(bool playback_active) const {
+  // Evaluate at the start of the frame, just as FIFO delivery does. A fresh
+  // reply after >=300 ms of reference silence cancels the inherited hold.
+  return this->barge_in_active_ && this->captured_bytes_ < this->speech_until_byte_ &&
+         !this->barge_in_playback_restarted_(playback_active);
+}
+
+float AECSpeexDspMicrophone::get_barge_in_speech_protection(float probability, bool confirmed,
+                                                         bool playback_active) {
+  if (this->is_failed() || this->buffer_mutex_ == nullptr) return 0.f;
+  xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+  float protection = 0.f;
+  if (this->barge_in_active_ && !this->response_playing_ &&
+      !(this->response_tail_ && millis() - this->response_end_ms_ < 300)) {
+    // Probability protects onset before confirmation. Once confirmed, even
+    // weak syllables receive full protection for exactly the delivery hold.
+    protection = confirmed || this->barge_in_hold_open_(playback_active) ? 1.f : probability;
+  }
+  xSemaphoreGive(this->buffer_mutex_);
+  return protection;
+}
+
 void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size, bool near_end, bool echo_rejected,
                                  bool playback_active) {
   this->near_end_speech_.store(near_end);
   if (this->buffer_ == nullptr || this->buffer_mutex_ == nullptr)
     return;
   xSemaphoreTake(this->buffer_mutex_, portMAX_DELAY);
+  const bool was_open = this->barge_in_hold_open_(playback_active);
   this->captured_bytes_ += data_size;
   if (this->barge_in_active_) {
-    constexpr size_t RESTART_SILENCE_BYTES = SAMPLE_RATE * sizeof(int16_t) * 300 / 1000;
     if (playback_active) {
-      if (!this->playback_active_ && this->playback_silence_bytes_ >= RESTART_SILENCE_BYTES) {
+      if (this->barge_in_playback_restarted_(playback_active)) {
         // A replacement reply must not inherit the preceding utterance's tail.
         // Keep queued speech; fresh confirmation below can reopen capture.
         this->speech_until_byte_ = 0;
@@ -2279,8 +2311,6 @@ void AECSpeexDspMicrophone::publish(const uint8_t *data, const size_t data_size,
     }
     this->playback_active_ = playback_active;
   }
-  const bool was_open = this->barge_in_active_ &&
-                        this->captured_bytes_ - data_size < this->speech_until_byte_;
   // AEC can leave residual TTS. Exclude response audio and a 300 ms acoustic
   // tail from BOTH live delivery and history, including short responses.
   if (this->response_playing_ || (this->response_tail_ && millis() - this->response_end_ms_ < 300)) {
