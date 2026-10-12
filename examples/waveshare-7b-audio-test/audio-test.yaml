@@ -199,8 +199,6 @@ aec_speexdsp:
   # Which processed microphone channel is published. Options:
   #   first  - microphone_slots[0] (default; only one canceller is run)
   #   second - microphone_slots[1]
-  #   mixed  - both processed independently and averaged (requires two
-  #            microphone slots; runs two cancellers: ~2x CPU/memory)
   # Upstream SpeexDSP has no beamformer. When this component's optional
   # beamformer below is disabled, this selects the published channel.
   output_channel: first

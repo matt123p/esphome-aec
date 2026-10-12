@@ -22,10 +22,11 @@ title: Troubleshooting & Limitations
   and reduce other memory-heavy features.
 - **Long playback slowly underruns or overruns:** enable `resampler` and play a
   continuous test for at least 30 seconds. Check `Playback rate adjust` for the
-  measured I2S rate and the gradually adjusted playback rate; the offered and
+  estimated I2S rate and the gradually adjusted playback rate; the offered and
   accepted throughput in `Playback input rate` is informational only — bursty
-  delivery is normal. If the playback rate settles at the 15–17 kHz clamp, or
-  gaps remain bursty rather than gradual, fix the source or network path.
+  delivery is normal. If the playback rate settles at the 15–17 kHz clamp,
+  check the actual audio clocks, write timing and device load. For bursty gaps,
+  investigate source delivery, the network path and rebuffering.
   Non-16 kHz audio must be converted before it reaches this component.
 - **Speech too quiet during playback:** with the AGC gate enabled, boost is
   withheld until speech proves itself. Check `AGC_GATE` telemetry and lower
@@ -62,11 +63,12 @@ section of [First-Time Board Setup]({{ '/first-time-setup/' | relative_url }}).
 
 ## Current limitations
 
-- Floating-point build: best on ESP32/S2/S3/P4 (hardware FPU). RISC-V variants
-  (C3/C5/C6) run it in slow software float.
+- The transport requires ESP-IDF TDM support: original ESP32 and ESP32-S2
+  cannot use it. ESP32-S3/P4 provide TDM and hardware floating point; other
+  TDM-capable targets need performance and memory validation.
 - Load scales with `filter_length`; very long filters must be validated
-  against the `DSP load` log and sustained microphone throughput. Boards
-  without PSRAM should keep `filter_length` modest.
+  against the `DSP load` log and sustained microphone throughput. The microphone
+  handoff buffers require working PSRAM, even with a short filter.
 - No dual-microphone speech enhancement: channels are processed independently
   (or combined by the optional post-AEC beamformer, which improves pickup but
   is not source separation).

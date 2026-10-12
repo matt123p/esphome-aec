@@ -55,13 +55,11 @@ enum AECSpeexDspReferenceSource : uint8_t {
   AEC_SPEEXDSP_REFERENCE_PLAYBACK = 1,
 };
 
-// Which processed microphone channel is published. SpeexDSP has no dual-
-// microphone enhancement stage, so each selected channel runs through its own
-// echo canceller and preprocessor and the output is selected (or mixed) here.
+// Which microphone runs through the mono canceller and preprocessor.
+// Beamforming supersedes this selection and processes all configured microphones.
 enum AECSpeexDspOutputChannel : uint8_t {
   AEC_SPEEXDSP_OUTPUT_FIRST = 0,
   AEC_SPEEXDSP_OUTPUT_SECOND = 1,
-  AEC_SPEEXDSP_OUTPUT_MIXED = 2,
 };
 
 enum AECSpeexDspCaptureState : uint8_t {

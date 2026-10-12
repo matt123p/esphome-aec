@@ -43,6 +43,7 @@ remove that `external_components` entry.
 The included `test-audio.wav` is used only as a repeatable signal for playback
 and cancellation tests.
 
-The diagnostic example disables the resampler so its generated signals remain
-at a known 16 kHz rate. The voice-assistant example enables rate matching for
-long streamed responses.
+The diagnostic example disables resampling so the test PCM sample sequence
+reaches TX without rate correction. Its physical playback rate still follows
+the actual I2S clock, which need not be exactly 16,000 Hz. The voice-assistant
+example enables rate matching for long streamed responses.

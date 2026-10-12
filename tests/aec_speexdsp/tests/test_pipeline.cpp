@@ -223,31 +223,6 @@ void run_pipeline_suite(testfw::Suite &s, const std::vector<Scenario> &scenarios
     }
     SUITE_END();
 
-    // Mixed dual-channel topology (output_channel MIXED).
-    SUITE_BEGIN("pipeline_output_mixed");
-    if (doubletalk == nullptr) {
-        s.skip("scenario missing");
-    } else {
-        PipelineConfig cfg = component_defaults();
-        cfg.agc = false;
-        cfg.output_mixed = true;
-        Pipeline pipeline(cfg);
-        std::vector<int16_t> planar(doubletalk->mic0.size() * 2);
-        const size_t n = doubletalk->mic0.size();
-        for (size_t i = 0; i < n; i++) {
-            planar[i] = doubletalk->mic0[i];
-            planar[n + i] = doubletalk->mic0[i];  // second channel duplicates scenario
-        }
-        std::vector<int16_t> out = pipeline.process_all(planar, doubletalk->reference);
-        CHECK_MSG(out.size() >= kSampleRate, "mixed topology produces output");
-        bool bounded = true;
-        for (int16_t v : out)
-            if (v < -32768 || v > 32767)
-                bounded = false;
-        CHECK_MSG(bounded, "mixed output within int16 range");
-    }
-    SUITE_END();
-
     // Soak: repeated full-pipeline processing must not grow memory or slow
     // down (state is fixed-size; proves no accumulation over long sessions).
     SUITE_BEGIN("soak_memory_stability");

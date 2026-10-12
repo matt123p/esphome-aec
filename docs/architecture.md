@@ -30,9 +30,8 @@ component. Per processed microphone channel it runs:
    echo. The long filter is this component's main advantage: the tail must
    cover speaker-plus-room decay plus the reference offset, or residual echo
    remains after convergence.
-3. **Channel handling.** Without beamforming, each selected microphone passes
-   through its own preprocessor and the published channel is `first`, `second`,
-   or the average of two processed channels (`mixed`). With `beamforming`, each
+3. **Channel handling.** Without beamforming, `first` or `second` runs one
+   canceller and preprocessor for that microphone only. With `beamforming`, each
    microphone keeps its own adaptive echo filter inside one Speex multichannel
    state; an
    allocation-free fixed-point localizer (normalized cross-correlation with
@@ -101,19 +100,22 @@ is fixed-size: history overwrites its oldest samples, while an active utterance
 preserves FIFO order and reports dropped bytes if its four-second queue is
 exhausted.
 
-Audio produced while the device is playing a voice-assistant response, plus a
-300 ms acoustic tail, is excluded from both live delivery and rolling history.
+When the integration calls `set_response_playing(true)`, response audio is
+excluded from both live delivery and rolling history. Calling
+`set_response_playing(false)` starts a further 300 ms exclusion for the acoustic tail.
 This reduces the chance that residual synthesized speech is replayed as the
 start of the user's next request. The integration must call the hand-off methods
 at the correct wake-word and voice-assistant lifecycle points; the microphone
-platform cannot infer those transitions on its own.
+platform cannot infer those transitions on its own. Full-duplex barge-in uses
+the separate capture-gate policy described in the
+[GRU guide]({{ '/neural-barge-in/' | relative_url }}#capture-gate-and-assistant-integration).
 
 ## Playback, automatic rate matching, and reference
 
 The ESPHome speaker accepts signed 16-bit, 16 kHz mono or stereo PCM and holds
 it in a one-second playback buffer. `playback_gain_db` attenuates each sample
-before both the TDM output and playback-reference tap, so the reference remains
-identical to what is sent to the DAC while preserving headroom in the analogue
+before both the TDM output and playback-reference tap, so a mono reference uses
+the same samples sent to the DAC while preserving headroom in the analogue
 amplifier/loopback path. If automatic rate matching is enabled, the
 component makes a small timing correction before buffering the audio. Mono is
 duplicated into the two configured TX slots; stereo uses one slot for each
@@ -171,9 +173,9 @@ nominally 16 kHz PCM. Mono and stereo are both supported.
 ### Task scheduling, CPU affinity, and priority
 
 The DSP processing task runs on core 0 at priority 4. On dual-core targets the
-playback/I2S TX task runs on core 1 at priority 20; on the single-core ESP32-S2
-it also runs on core 0. Playback normally blocks in the I2S driver, so sharing
-the core on S2 does not mean it continuously consumes CPU. If a frame exceeds
+playback/I2S TX task runs on core 1 at priority 20; the code selects core 0 for
+single-core builds. Playback normally blocks in the I2S driver. This scheduling
+fallback does not establish support for targets lacking TDM. If a frame exceeds
 its real-time budget (`frame_size` / 16 kHz), the processing task yields so
 system work is not starved. Diagnostics report the processing peak; if backlog
 reaches the transport, a later read may also record an `rx_error`.

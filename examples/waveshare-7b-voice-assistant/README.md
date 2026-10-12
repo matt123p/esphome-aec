@@ -14,10 +14,11 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B, built on the recommended
   disconnects or pipeline failures; and
 - persistent speaker volume control.
 
-The example also enables automatic host-to-satellite playback rate matching.
-This compensates for small sustained differences between Home Assistant's PCM
-delivery rate and the satellite's fixed 16 kHz audio clock, improving stability
-during long spoken responses. See
+The example also enables automatic playback rate matching. This compensates
+for small differences between nominal 16 kHz PCM and the actual I2S sample
+clock, including clock-divider rounding and source clock tolerance. The target
+is estimated from blocking I2S write timing, independently of network delivery
+speed. See
 [How It Works](https://matt123p.github.io/esphome-aec/architecture/#playback-automatic-rate-matching-and-reference).
 
 Playback is digitally attenuated by 12 dB before the DAC and AEC reference tap
@@ -29,7 +30,7 @@ log remains comfortably below 100% and the state remains in internal RAM.
 
 AGC is limited by a reference-aware gate (`agc.gate`): while a response is
 playing, boost is only permitted for audio that sustains pre-AGC RMS above the
-speech threshold, so residual echo is not amplified with the user's voice.
+RMS threshold. Residual echo can still acquire boost if it passes those thresholds.
 The gate never mutes audio, and the AEC keeps adapting throughout. See the
 [configuration reference](https://matt123p.github.io/esphome-aec/configuration/#reference-aware-agc-gate)
 for the thresholds and timings.

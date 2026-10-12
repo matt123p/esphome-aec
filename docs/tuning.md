@@ -111,10 +111,13 @@ samples  = delay_ms * 16
 ```
 
 Useful starting points are 512 samples (32 ms), 1024 (64 ms), 1600 (100 ms),
-and 2048 (128 ms). Play a deterministic, non-repeating calibration signal,
-record a raw microphone slot, and cross-correlate the recording with the source
-WAV. Use the correlation peak as the initial delay, then sweep nearby values
-while measuring and listening.
+and 2048 (128 ms), but these are trial values rather than a measured latency.
+Play a deterministic, non-repeating calibration signal and compare the
+microphone echo with the software reference on the same capture timeline.
+Correlation against a source WAV also includes any unknown recording/playback
+start offset, so its peak alone is not a reliable delay setting. Leave enough
+causal offset for the adaptive filter, then sweep nearby values while measuring
+and listening; excessive reference delay can put the reference after the echo.
 
 For an analogue hardware reference, use the captured slot directly. Verify
 slot mapping, reference clipping and cancellation quality. See
@@ -161,7 +164,7 @@ recognition success during double-talk are the final quality tests.
 With beamforming enabled, inspect the periodic `Beamformer profile`
 TDOA/confidence log and set `max_lag` from the physical microphone spacing
 (about one sample per 21 mm at 16 kHz) before relaxing the confidence
-thresholds. Without beamforming, try `output_channel: second` (or `mixed`) if
+thresholds. Without beamforming, try `output_channel: second` if
 the first microphone is weaker.
 
 ### Validate filter length against real-time throughput
@@ -172,9 +175,11 @@ lower-cost settings work. For each candidate value:
 1. Cold boot several times and confirm there is no startup watchdog reset.
 2. Stream microphone audio for at least a minute while the display, network,
    wake-word engine, and playback path are active.
-3. Confirm that five seconds of mono 16-bit/16 kHz audio produces 160,000 bytes
-   of microphone data. A materially lower sustained rate means the system is
-   falling behind even if speech still sounds plausible.
+3. With a listener active and response muting/capture gating disabled, five
+   seconds of mono 16-bit audio should produce approximately 160,000 bytes at
+   nominal 16 kHz. Allow for frame boundaries and the actual hardware clock.
+   Measure over a settled interval without pre-roll replay or backlog draining;
+   a materially lower sustained rate can indicate that the system is falling behind.
 4. Watch `max_processing_us`, RX/TX errors, dropped frames, and microphone queue
    overflow logs with diagnostics enabled. On `aec_speexdsp`, watch the
    five-second `DSP load` line: the average percentage is the share of one

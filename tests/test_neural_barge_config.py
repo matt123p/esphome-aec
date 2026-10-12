@@ -41,10 +41,12 @@ class NeuralBargeConfigTests(unittest.TestCase):
         playback_delay['reference_delay_samples']=7
         validate(playback_delay)
         for change in [dict(frame_size=128),dict(microphone_slots=[0]),dict(capture_only=True),
-                       dict(vad=False),dict(output_channel='mixed')]:
+                       dict(vad=False),dict(output_channel='second',microphone_slots=[0])]:
             invalid=copy.deepcopy(config);invalid.update(change)
             with self.subTest(change=change),self.assertRaises(ValueError):validate(invalid)
         validate(copy.deepcopy(config))  # Active mode needs no legacy near_end configuration.
+        second=copy.deepcopy(config);second['output_channel']='second'
+        validate(second)  # Either single processed microphone supports neural VAD.
         missing_activity=copy.deepcopy(config)
         del missing_activity['neural_barge_in']['voice_assistant_active']
         with self.assertRaises(ValueError):validate(missing_activity)
@@ -52,6 +54,8 @@ class NeuralBargeConfigTests(unittest.TestCase):
         disabled['neural_barge_in']['enabled']=False
         disabled['frame_size']=128;disabled['microphone_slots']=[0]
         validate(disabled)  # Off has no neural feature-layout restrictions.
+        disabled['output_channel']='second'
+        with self.assertRaises(ValueError):validate(disabled)  # Second still requires two slots.
         schema_text=source.read_text(encoding='utf-8')
         self.assertNotIn('two_stage_barge_in',schema_text)
         self.assertNotIn('cv.Optional("shadow"',schema_text)

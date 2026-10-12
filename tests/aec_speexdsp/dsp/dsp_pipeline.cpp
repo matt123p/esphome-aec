@@ -19,7 +19,7 @@ Pipeline::Pipeline(const PipelineConfig &cfg) : config(cfg) {
 uint8_t Pipeline::processed_channels_() const {
     if (config.beam.enabled)
         return config.beam.microphones;
-    return config.output_mixed ? 2 : 1;
+    return 1;
 }
 
 void Pipeline::init_states_() {
@@ -134,12 +134,7 @@ FrameResult Pipeline::process(const int16_t *mic, const int16_t *ref_in) {
             const int detected = speex_preprocess_run(preprocess_state_[c], channel_out);
             if (c == 0) result.vad_state = detected != 0;
         }
-        if (channels_ == 2) {
-            for (size_t n = 0; n < frame; n++)
-                result.output[n] = static_cast<int16_t>((processed[n] + processed[frame + n]) / 2);
-        } else {
-            std::memcpy(result.output.data(), processed.data(), frame * sizeof(int16_t));
-        }
+        std::memcpy(result.output.data(), processed.data(), frame * sizeof(int16_t));
     }
 
     // Component: VAD state and probability from the primary preprocessor.

@@ -76,7 +76,7 @@ void AECSpeexDspComponent::set_pins(int mclk, int bclk, int lrclk, int din, int 
 uint8_t AECSpeexDspComponent::processed_channels_() const {
   if (this->beamforming_enabled_)
     return this->microphone_slots_.size();
-  return this->output_channel_ == AEC_SPEEXDSP_OUTPUT_MIXED ? 2 : 1;
+  return 1;
 }
 
 void AECSpeexDspComponent::setup() {
@@ -219,9 +219,7 @@ void AECSpeexDspComponent::dump_config() {
                 this->tdm_slots_, this->microphone_slots_[0], second_slot,
                 this->reference_source_ == AEC_SPEEXDSP_REFERENCE_PLAYBACK ? "playback buffer" : "analog TDM",
                 this->reference_slot_, this->tx_slots_[0], this->tx_slots_[1], this->diagnostic_raw_slot_.load(),
-                this->output_channel_ == AEC_SPEEXDSP_OUTPUT_MIXED
-                    ? "mixed"
-                    : (this->output_channel_ == AEC_SPEEXDSP_OUTPUT_SECOND ? "second" : "first"),
+                this->output_channel_ == AEC_SPEEXDSP_OUTPUT_SECOND ? "second" : "first",
                 this->frame_size_, static_cast<unsigned>(this->frame_size_ * 1000u / static_cast<unsigned>(SAMPLE_RATE)),
                 this->filter_length_,
                 static_cast<unsigned>(this->filter_length_ * 1000u / static_cast<unsigned>(SAMPLE_RATE)),
@@ -370,10 +368,6 @@ bool AECSpeexDspComponent::start_dsp_() {
   } else switch (this->output_channel_) {
     case AEC_SPEEXDSP_OUTPUT_SECOND:
       this->processed_slots_[0] = this->microphone_slots_[1];
-      break;
-    case AEC_SPEEXDSP_OUTPUT_MIXED:
-      this->processed_slots_[0] = this->microphone_slots_[0];
-      this->processed_slots_[1] = this->microphone_slots_[1];
       break;
     case AEC_SPEEXDSP_OUTPUT_FIRST:
     default:
@@ -857,12 +851,7 @@ void AECSpeexDspComponent::run_audio_task_() {
         }
         if (this->legacy_near_end_enabled_())
           near_correlation = this->near_end_correlation_.finish_frame(channels);
-        if (channels == 2) {
-          for (size_t frame = 0; frame < frame_size; frame++)
-            out[frame] = static_cast<int16_t>((processed[frame] + processed[frame_size + frame]) / 2);
-        } else {
-          std::memcpy(out, processed, frame_size * sizeof(int16_t));
-        }
+        std::memcpy(out, processed, frame_size * sizeof(int16_t));
       }
     }
 

@@ -31,14 +31,14 @@ assistant example does not enable this feature.
 | `i2s_port` | no | `0` | ESP-IDF I2S port (`0`–`2`; chip-dependent). |
 | `tdm_slots` | no | `4` | Number of TDM slots; currently exactly `4`. |
 | `microphone_slots` | no | `[0, 1]` | One to four distinct RX slots (`0`–`3`). Physical slot numbers are mapped to dense internal channel storage. |
-| `reference_source` | no | `analog_slot` | `analog_slot` reads the loopback from an ADC slot (preferred); `playback` uses a mono copy of accepted speaker PCM. |
+| `reference_source` | no | `analog_slot` | `analog_slot` reads the loopback from an ADC slot (preferred); `playback` uses a mono copy of samples prepared for I2S TX, after resampling, cue mixing and digital gain. |
 | `reference_slot` | no | `2` | RX slot for the analog reference; must differ from the microphone slots. |
 | `reference_delay_samples` | no | `0` | Software `playback` reference only: `0`–`4000` samples. Rejected with `analog_slot`, even at zero. 16 samples = 1 ms. |
 | `tx_slots` | no | `[0, 1]` | Two TDM TX slots consumed by the DAC (mono is duplicated; stereo maps L/R). |
 | `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of DSP output; for slot mapping. Also settable at runtime via `set_diagnostic_raw_slot(n)` (`-1` restores DSP output). |
 | `frame_size` | no | `256` | Processing frame in samples; power of two, `128`–`1024`. 256 = 16 ms. Larger frames amortize FFT overhead but increase latency. |
 | `filter_length` | no | `2048` | AEC tail length in samples (`256`–`16384`, ≥ `frame_size`). This is the main quality knob: see [choosing an echo filter length](#choosing-an-echo-filter-length). |
-| `output_channel` | no | `first` | `first`, `second`, or `mixed` (average; requires two microphone slots and runs two cancellers). Superseded by `beamforming`. |
+| `output_channel` | no | `first` | `first` or `second` processes only the selected microphone (`second` requires two slots). Superseded by `beamforming`, which combines all configured microphones. |
 | `beamforming` | no | disabled | Post-AEC adaptive delay-and-sum configuration below. Requires at least two microphone slots. |
 | `noise_suppression` | no | `true` | Speex preprocessor denoise (stationary noise: hiss, fan, hum). |
 | `noise_suppression_level_db` | no | `15` | Maximum attenuation in dB (`5`–`60`). Higher absorbs more noise — and more speech. The residual-echo suppressor shares this gain machinery. |
@@ -48,6 +48,8 @@ assistant example does not enable this feature.
 | `agc.gate` | no | disabled | Reference-aware boost protection during playback; see [Reference-aware AGC gate](#reference-aware-agc-gate). |
 | `vad` | no | `true` | Speex voice activity detection on the processed channel. |
 | `vad_threshold` | no | `35` | Speech-start probability in percent (`20`–`90`). The speech-continue threshold stays at Speex's 20 %. |
+| `reference_activity` | no | see below | Shared reference activity thresholds, tail and startup guard used by playback-aware processing. |
+| `neural_barge_in` | no | disabled | Optional learned VAD during reference playback with an active assistant; see the [GRU guide]({{ '/neural-barge-in/' | relative_url }}). |
 | `echo_suppress_db` | no | `40` | Residual-echo suppression (dB) applied by the preprocessor during far-end-only audio (`5`–`60`). |
 | `echo_suppress_active_db` | no | `15` | Residual-echo suppression (dB) during double-talk. Lower preserves near-end speech. |
 | `playback_gain_db` | no | `0` | Digital attenuation (`-60`–`0` dB) before the I2S TX and the reference tap. Use it to prevent DAC/amplifier/reference-loopback clipping. |
@@ -57,6 +59,28 @@ assistant example does not enable this feature.
 | `profiling` | no | `false` | Compile per-stage frame profiling counters. |
 | `slot_logs` | no | `false` | Compile five-second raw-slot and output level logging. |
 | `diagnostics` | no | `false` | Compile five-second error, timing, buffer, and VAD statistics. |
+| `serial_control` | no | `false` | Enable the diagnostic serial command interface. |
+| `diag_capture_max_seconds` | no | `30` | Maximum diagnostic multi-channel capture duration in seconds (`1`–`120`); separate from the three-second `start_capture()` buffer. |
+| `capture_only` | no | `false` | Capture diagnostic raw channels/reference while skipping DSP and microphone publication. Incompatible with enabled neural barge-in. |
+
+### Shared reference activity
+
+`reference_activity` defines when the captured reference counts as playback:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `open_rms` | `200` | Linear int16 RMS threshold to activate playback state. |
+| `close_rms` | `100` | Below this threshold for `tail_ms`, playback state closes. Must be below `open_rms`. |
+| `tail_ms` | `250` | Quiet-reference interval before playback state closes. |
+| `startup_ms` | `200` | Startup guard after reference activation. |
+
+The corresponding `agc.gate.reference_open_rms`, `reference_close_rms`,
+`tail_ms` and `startup_guard_ms` settings are legacy aliases for these shared
+values. `near_end.startup_ms` is also a startup alias. Explicit conflicting
+values are rejected; these are not independent controls for each feature.
+RMS values accept `0.01`–`32768`, and durations accept `0`–`60000` ms.
+If `near_end` is configured, startup plus onset plus two processing frames
+must fit within its 512 ms pre-roll budget.
 
 ### `beamforming`
 
@@ -128,8 +152,8 @@ the codec; the speaker child does not take an `audio_dac` option.
 
 `filter_length` is a plain sample count of echo tail (16 samples = 1 ms at
 16 kHz), not an abstract unit. It can run up to 16,384 samples — about one
-second of echo path — providing significantly better echo suppression in
-reflective rooms. The tail must cover
+second of echo path. A longer tail can help when a shorter filter does not cover
+the path; it does not guarantee better suppression. The tail must cover
 speaker-plus-room decay plus the reference offset, or residual echo remains
 after the canceller converges.
 
@@ -170,9 +194,11 @@ The engine is plain C compiled from source, so build settings matter:
 3. Run the chip at its maximum `cpu_frequency`.
 4. **The FFT runs on ESP-DSP.** The vendored `fftwrap.c` uses the Espressif
    `espressif/esp-dsp` FFT (added automatically as a managed component): on
-   ESP32-S3 and ESP32-P4 its float FFT uses the chip's SIMD instructions;
-   other targets fall back to ANSI C. `spx_ifft` is built from the forward
-   transform via the re/im-swap identity.
+   ESP32-S3 uses optimized AES3 kernels and ESP32-P4 uses ARP4 kernels.
+   P4 floating-point arithmetic uses a scalar FPU and hardware loops, rather
+   than packed floating-point SIMD. Other targets use ANSI C kernels.
+   Real transforms use a half-size complex FFT; `spx_ifft` uses inverse real
+   post-processing followed by the forward complex FFT with conjugation.
 5. Only then reach for smaller `filter_length` values.
 
 ### C++ / lambda API
@@ -190,8 +216,11 @@ esphome:
   through the speaker (delay/reference tuning aid).
 - `get_vad_state()` / `get_vad_probability()` — current speech activity of the
   primary processed channel.
-- `reset_audio_activity()` / `audio_silent_for(ms)` — inactivity meters for
-  barge-in policies (`VOICE_ASSISTANT_BARGE_IN` is honoured).
+- Microphone `set_response_playing(bool)` — suppress response audio and a
+  300 ms tail from delivery/history in an ordinary assistant session.
+- Microphone `set_barge_in_active(bool)` / `is_near_end_speech()` — arm the
+  capture gate and read its speech decision for a compatible full-duplex
+  integration; see the [GRU guide]({{ '/neural-barge-in/' | relative_url }}).
 
 The optional meters component is configured on the hub:
 

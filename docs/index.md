@@ -37,10 +37,11 @@ component:
 
 - **Long echo filters.** The adaptive filter runs from `256` to `16,384`
   samples — up to about one second of echo tail. The filter must span the
-  speaker-plus-room decay, so long tails provide significantly better echo
-  suppression in reflective rooms than short-tail engines.
+  speaker-plus-room decay. Longer tails can help in reflective rooms when a
+  shorter filter does not cover the path; acoustic results still need validation.
 - **Open source.** Plain C compiled from source: no closed binaries, and it
-  builds for every ESP32 variant with an FPU (ESP32, S2, S3, P4).
+  uses ESP-IDF TDM transport, with ESP32-P4 tested and ESP32-S3 a hardware-capable
+  port requiring board validation. Original ESP32 and S2 lack the required TDM mode.
 - **Full preprocessing chain.** SpeexDSP noise suppression, AGC, residual-echo
   suppression with separate double-talk handling, and VAD, plus an optional
   post-AEC delay-and-sum beamformer for two-microphone boards. An optional

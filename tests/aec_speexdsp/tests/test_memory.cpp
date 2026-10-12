@@ -97,11 +97,10 @@ void run_memory_suite(testfw::Suite &s) {
             mic[i] = static_cast<int16_t>(1000 * std::sin(0.05 * i));
             ref[i] = static_cast<int16_t>(800 * std::sin(0.03 * i));
         }
-        for (int variant = 0; variant < 4; variant++) {
+        for (int variant = 0; variant < 3; variant++) {
             PipelineConfig cfg;
-            cfg.beam.enabled = variant >= 2;
-            cfg.beam.microphones = variant == 3 ? 4 : 2;
-            cfg.output_mixed = variant == 1;
+            cfg.beam.enabled = variant >= 1;
+            cfg.beam.microphones = variant == 2 ? 4 : 2;
             Pipeline pipeline(cfg);
             std::vector<int16_t> planar;
             const uint8_t chans = pipeline.channels();

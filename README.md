@@ -13,9 +13,11 @@ standard ESPHome `microphone` and `speaker` interfaces.
 **`aec_speexdsp`** is built on the open-source
 [Xiph SpeexDSP](https://github.com/xiph/speexdsp) library. Its adaptive echo
 filter can run with significantly long tails (up to 16,384 samples, about
-one second of echo path), providing significantly better echo suppression in
-reflective rooms. It is plain C that builds for every ESP32 variant with an
-FPU, with no closed-source binaries.
+one second of echo path), which can improve echo suppression in reflective
+rooms when shorter filters do not cover the path. The DSP is plain C,
+with no closed-source binaries. The complete component requires ESP-IDF TDM
+support and PSRAM: ESP32-P4 is tested, while ESP32-S3 needs board validation.
+Original ESP32 and ESP32-S2 lack the required TDM mode.
 
 Release `v1.01` includes optional
 [GRU barge-in detection](docs/neural-barge-in.md) and independent SpeexDSP/GRU

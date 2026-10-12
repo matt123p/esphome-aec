@@ -42,7 +42,6 @@ struct PipelineConfig {
     int echo_suppress_db = 40;
     int echo_suppress_active_db = 15;
     int reference_delay_samples = 0;  // component's apply_reference_delay_
-    bool output_mixed = false;        // AEC_SPEEXDSP_OUTPUT_MIXED (2 independent channels averaged)
     BeamConfig beam;
 };
 

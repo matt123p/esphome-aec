@@ -52,7 +52,6 @@ AECSpeexDspOutputChannel = aec_speexdsp_ns.enum("AECSpeexDspOutputChannel")
 OUTPUT_CHANNELS = {
     "first": AECSpeexDspOutputChannel.AEC_SPEEXDSP_OUTPUT_FIRST,
     "second": AECSpeexDspOutputChannel.AEC_SPEEXDSP_OUTPUT_SECOND,
-    "mixed": AECSpeexDspOutputChannel.AEC_SPEEXDSP_OUTPUT_MIXED,
 }
 
 
@@ -61,8 +60,6 @@ def _validate(config):
     if "near_end" in config:
         if not config[CONF_VAD]:
             raise cv.Invalid("near_end requires vad: true")
-        if config[CONF_OUTPUT_CHANNEL] == "mixed" and not config[CONF_BEAMFORMING]["enabled"]:
-            raise cv.Invalid("near_end requires a single processed output or beamforming")
         near = config["near_end"]
         if near["startup_ms"] + near["onset_ms"] + 2 * config[CONF_FRAME_SIZE] / 16 > 512:
             raise cv.Invalid("near_end startup + onset + two frames must fit the 512 ms pre-roll")
@@ -80,8 +77,6 @@ def _validate(config):
             raise cv.Invalid("active neural_barge_in requires vad: true for idle speech")
         if "voice_assistant_active" not in neural:
             raise cv.Invalid("active neural_barge_in requires a voice_assistant_active lambda")
-        if config[CONF_OUTPUT_CHANNEL] == "mixed" and not config[CONF_BEAMFORMING]["enabled"]:
-            raise cv.Invalid("active neural_barge_in requires a single processed output or beamforming")
         if config["capture_only"]:
             raise cv.Invalid("neural_barge_in cannot run with capture_only")
     slots = config[CONF_TDM_SLOTS]
@@ -106,7 +101,7 @@ def _validate(config):
         raise cv.Invalid("filter_length must be at least frame_size")
     if config[CONF_OUTPUT_CHANNEL] != "first" and len(selected) < 2:
         raise cv.Invalid(
-            "output_channel 'second' and 'mixed' require two microphone_slots"
+            "output_channel 'second' requires two microphone_slots"
         )
     if config[CONF_BEAMFORMING]["enabled"] and len(selected) < 2:
         raise cv.Invalid("beamforming requires at least two microphone_slots")

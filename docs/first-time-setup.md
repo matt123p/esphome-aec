@@ -34,8 +34,8 @@ playback DAC/codec, and amplifier. Record:
 - the two TDM slots consumed by the DAC.
 
 The components require ESP-IDF, four-slot, 16-bit, 16 kHz TDM, and
-synchronized microphone channels. `aec_speexdsp` runs on any ESP32
-(practically, one with an FPU) and prefers PSRAM for long echo filters. A
+synchronized microphone channels. Use a TDM-capable target, preferably with a
+hardware FPU (ESP32-S3 or ESP32-P4), and working PSRAM for the microphone buffers. A
 hardware playback reference is strongly preferred. See
 [Hardware & Audio Design]({{ '/hardware/' | relative_url }})
 before selecting or wiring a board.

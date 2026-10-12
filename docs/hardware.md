@@ -11,13 +11,14 @@ substitute for good physical audio design.
 ## Supported processors
 
 `aec_speexdsp` is plain C compiled from the vendored, BSD-licensed SpeexDSP
-sources, so it builds for any ESP32 variant. It is most efficient on variants
-with a hardware FPU — **ESP32, ESP32-S2, ESP32-S3, and ESP32-P4**. RISC-V
-variants (ESP32-C3/C5/C6) lack an FPU and run the floating-point DSP in slow
-software float, which is not recommended for real-time AEC. Because there are
-no closed-source binaries, the echo canceller can run with significantly long
-filters (up to ~1 s of echo tail), providing significantly better echo
-suppression.
+sources. The complete component also requires an ESP-IDF peripheral with TDM
+support; an FPU alone is insufficient. **ESP32-S3 and ESP32-P4** have both TDM
+and hardware floating-point support. The original ESP32 and ESP32-S2 lack the
+required TDM mode and cannot use this transport. See Espressif's
+[I2S mode support table](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/i2s.html#overview-of-all-modes).
+Other TDM-capable targets still need CPU, memory and board validation. Long
+filters (up to ~1 s of echo tail) can cover longer acoustic paths, but do not
+guarantee better cancellation when a shorter filter already covers the path.
 
 The component is known to work on the **ESP32-P4** in the
 [Waveshare ESP32-P4-WIFI6-Touch-LCD-7B](https://www.waveshare.com/wiki/ESP32-P4-WIFI6-Touch-LCD-7B),
@@ -29,7 +30,7 @@ board has also been tested.
 The component requires:
 
 - ESP-IDF, not the Arduino framework;
-- PSRAM (preferred for long canceller tails);
+- enabled, working PSRAM for the microphone handoff buffers;
 - enough CPU headroom for two real-time FreeRTOS tasks and the selected
   processing stages.
 
@@ -144,25 +145,30 @@ not actually connected to playback is not a reference.
 
 ### Software reference (`playback`)
 
-The software approach copies PCM accepted by the ESPHome speaker into a second
-ring buffer and feeds a mono version to the echo canceller. It is useful for experiments or
-boards with no hardware reference and requires no extra analog connection.
+The software approach copies the samples prepared by the playback task for I2S
+TX, after resampling, cue mixing and digital gain, into a reference ring buffer.
+Mono is copied directly; stereo is averaged to mono. Silence is included when
+no playback samples are available. This requires no extra analog connection.
 `reference_delay_samples` attempts to align this copy with the later acoustic
 echo at the microphones.
 
-**NOTE:** This method is fundamentally limited and should not be expected to produce good
-AEC results. The copied PCM is taken before the DAC, amplifier, volume-dependent
-gain, loudspeaker, enclosure, and acoustic path. It therefore omits delay,
-frequency response, nonlinear distortion, clock differences, and other changes
-that the microphones actually hear. Manual delay can correct only timing; it
-cannot reconstruct the missing analogue and acoustic behaviour. Use a real
-hardware reference for dependable full-duplex performance.
+The copy is taken before the DAC and analogue chain. The adaptive echo filter
+models linear gain, frequency response and causal delay through the playback
+and acoustic path, provided that path fits within `filter_length`. Manual delay
+can reduce the fixed offset the filter must cover, but a reference delayed
+beyond the earliest echo cannot be corrected by a causal filter. Nonlinear
+distortion and clipping are harder to cancel, especially when introduced after
+the reference tap. RX and TX share the hardware clocks here, so this is not a
+separate-clock reference. A well-designed hardware tap can include more of the
+real playback chain; validate either approach acoustically on the target board.
 
 ## Microphones
 
-The component accepts one to four microphone slots and processes each channel
-against the reference independently, with an optional post-AEC delay-and-sum
-beamformer to combine them. Two microphones give the device spatial
+The component accepts one to four microphone slots. Without beamforming,
+`first` or `second` processes only that selected microphone. With beamforming,
+all configured microphones are
+echo-cancelled in one multichannel state and combined before a shared
+preprocessor. Two microphones give the device spatial
 information: a nearby speaker, a person in front of the panel, and background
 noise reach the two capsules at different levels and times. The beamformer
 uses those inter-microphone time differences to steer toward the speaker.

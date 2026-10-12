@@ -4,10 +4,12 @@ title: Installation & Setup
 
 # Installation & Setup
 
-This repository contains one component, `aec_speexdsp`: an open-source
-SpeexDSP-based echo canceller whose adaptive filter runs with significantly
-longer tails (up to ~1 s of echo path), providing significantly better echo
-suppression, and which builds for every ESP32 variant with an FPU.
+The main component, `aec_speexdsp`, is an open-source SpeexDSP-based echo
+canceller with adaptive filters covering up to ~1 s of echo path. Its transport
+requires ESP-IDF TDM support, and its microphone buffers require PSRAM.
+ESP32-P4 is the tested target; ESP32-S3 has the required TDM and FPU hardware
+but still needs board-specific validation. The repository also includes an
+optional voice-assistant engine for compatible full-duplex integrations.
 
 > **Using the Waveshare 7B?** The fastest path is to use the complete
 > [audio-test and voice-assistant examples]({{ '/examples/' | relative_url }}).
@@ -45,8 +47,8 @@ external_components:
 
 Then:
 
-1. Configure ESPHome for an ESP32 variant with a hardware FPU (`ESP32`,
-   `ESP32-S2`, `ESP32-S3`, or `ESP32-P4`) using `framework: type: esp-idf`,
+1. Configure ESPHome for a TDM-capable target with a hardware FPU (`ESP32-S3`
+   or `ESP32-P4`) using `framework: type: esp-idf`,
    and enable PSRAM.
 2. Compile the DSP with performance optimization — add both keys to the
    `esp32:` framework `sdkconfig_options` (they form a Kconfig choice, so the
@@ -177,8 +179,9 @@ speaker:
     aec_speexdsp_id: voice_audio
 ```
 
-On an ESP32-S3 the same configuration works with S3 pins and
-`board: esp32-s3-devkitc-1` / `variant: ESP32S3`. On a board without an analog
+For an ESP32-S3, adapt the target, pins, PSRAM, power and clock settings to
+the actual board; the P4-specific settings above are not portable unchanged.
+On a board without an analog
 loopback slot, use `reference_source: playback` and tune
 `reference_delay_samples` (0–4000) instead; expect weaker cancellation than a
 hardware reference.
