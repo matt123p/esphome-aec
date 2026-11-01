@@ -153,7 +153,7 @@ void run_aec_suite(testfw::Suite &s, const std::vector<Scenario> &scenarios) {
             const double erle = erle_db(echo.data() + skip, out.data() + skip, echo.size() - skip);
             CHECK_MSG(erle > 8.0, "MDF converges with unmatched reference delay");
         }
-        // Reference-delay compensation (like set_reference_delay_samples) for
+        // Synthetic reference-delay compensation for
         // the worst case: delay the reference so the filter sees a short path.
         {
             std::vector<int16_t> echo = echo_of(far, 20.0 + 160.0, 0.5);

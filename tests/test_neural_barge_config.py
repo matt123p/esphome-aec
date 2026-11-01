@@ -38,8 +38,9 @@ class NeuralBargeConfigTests(unittest.TestCase):
             hardware_delay=copy.deepcopy(config);hardware_delay['reference_delay_samples']=delay
             with self.subTest(hardware_delay=delay),self.assertRaises(ValueError):validate(hardware_delay)
         playback_delay=copy.deepcopy(config);playback_delay['reference_source']='playback'
-        playback_delay['reference_delay_samples']=7
-        validate(playback_delay)
+        with self.assertRaises(ValueError):validate(playback_delay)
+        overlap=copy.deepcopy(config);overlap['reference_slot']=0
+        with self.assertRaises(ValueError):validate(overlap)
         for change in [dict(frame_size=128),dict(microphone_slots=[0]),dict(capture_only=True),
                        dict(vad=False),dict(output_channel='second',microphone_slots=[0])]:
             invalid=copy.deepcopy(config);invalid.update(change)

@@ -3,7 +3,9 @@
 This component provides synchronized microphone capture, SpeexDSP echo
 cancellation/preprocessing, optional beamforming, and ESPHome microphone and
 speaker interfaces. Hardware references pass directly from their TDM slot to
-AEC; software playback references retain optional delay compensation.
+AEC. AEC is very sensitive to timing alignment between the reference and the
+microphones. It will only work effectively with a hardware reference captured in sync
+with the microphone channels.
 
 Optional playback rate matching resamples nominally 16 kHz PCM to compensate
 for the actual I2S sample rate, which can differ from the requested rate because

@@ -121,9 +121,11 @@ device's own speaker. Without a strong, correctly timed reference, the
 canceller cannot distinguish speaker echo from the user's voice and
 cancellation will be poor.
 
-The component can obtain the reference in two ways.
+The component requires a synchronized hardware reference. AEC is very sensitive to
+timing alignment between the reference and the microphones. It will only work
+effectively with a hardware reference captured in sync with the microphone channels.
 
-![Comparison between hardware and software AEC reference paths]({{ '/assets/diagrams/reference-sources.svg' | relative_url }})
+![Hardware AEC reference path]({{ '/assets/diagrams/reference-sources.svg' | relative_url }})
 
 ### Hardware or analog reference (`analog_slot`)
 
@@ -131,8 +133,7 @@ A board designed for AEC may route the DAC, amplifier input, or another point in
 the speaker path back into one channel of its ADC. That channel arrives as a TDM
 slot beside the microphones. Configure that slot as `reference_slot`.
 
-This is the preferred approach when the board provides a well-designed
-reference. It stays in the same hardware clock domain as the microphones and
+A well-designed hardware reference is required. It stays in the same hardware clock domain as the microphones and
 can include real playback-path delay and gain. Depending on where the board
 samples it, it may also include DAC or analog-chain effects. It still does not
 perfectly describe the acoustic speaker output, so gain, polarity, routing, and
@@ -142,25 +143,6 @@ When choosing hardware, inspect the schematic rather than relying only on an
 “AEC” product label. Look for a signal from the speaker/DAC path routed back to
 an ADC input, and confirm which TDM slot carries it. A spare ADC channel that is
 not actually connected to playback is not a reference.
-
-### Software reference (`playback`)
-
-The software approach copies the samples prepared by the playback task for I2S
-TX, after resampling, cue mixing and digital gain, into a reference ring buffer.
-Mono is copied directly; stereo is averaged to mono. Silence is included when
-no playback samples are available. This requires no extra analog connection.
-`reference_delay_samples` attempts to align this copy with the later acoustic
-echo at the microphones.
-
-The copy is taken before the DAC and analogue chain. The adaptive echo filter
-models linear gain, frequency response and causal delay through the playback
-and acoustic path, provided that path fits within `filter_length`. Manual delay
-can reduce the fixed offset the filter must cover, but a reference delayed
-beyond the earliest echo cannot be corrected by a causal filter. Nonlinear
-distortion and clipping are harder to cancel, especially when introduced after
-the reference tap. RX and TX share the hardware clocks here, so this is not a
-separate-clock reference. A well-designed hardware tap can include more of the
-real playback chain; validate either approach acoustically on the target board.
 
 ## Microphones
 

@@ -9,8 +9,7 @@ title: Troubleshooting & Limitations
 - **Silence or the wrong microphone:** map every slot with
   `diagnostic_raw_slot`; do not assume the codec's channel order.
 - **No cancellation:** verify that the reference contains playback, confirm
-  reference polarity/gain and check for clipping. With a software playback
-  reference, also measure its latency. A missing or clipped reference cannot
+  reference polarity/gain and check for clipping. Verify hardware reference timing alignment with the microphones. A missing or clipped reference cannot
   cancel echo.
 - **Speech sounds chopped or metallic:** reduce `echo_suppress_db` /
   `echo_suppress_active_db`, shorten the filter, test with noise suppression
@@ -53,9 +52,7 @@ title: Troubleshooting & Limitations
   default makes the floating-point loops several times slower. RISC-V targets
   (C3/C5/C6) also run this floating-point code in slow soft-float.
 - **Residual echo remains at the end of loud playback:** the echo tail is
-  longer than the filter. Increase `filter_length` (this is the main advantage
-  of this component), or, with a software playback reference, reduce its delay error so the tail is
-  spent on the room rather than the fixed offset.
+  longer than the filter. Verify hardware reference alignment and increase `filter_length`.
 
 For hardware bring-up problems (blank display, undetected codecs, silent
 slots, a reference that behaves like a microphone), see the troubleshooting
@@ -90,8 +87,9 @@ response audio from microphone delivery and history.
   (or combined by the optional post-AEC beamformer, which improves pickup but
   is not source separation).
 - No wake-net (feed the cleaned microphone to ESPHome Micro Wake Word instead).
-- Reference gain requires measurement and tuning. Hardware references pass
-  through directly; software playback references provide manual delay
-  compensation.
+- Reference gain and timing alignment require measurement and tuning. AEC is very
+  sensitive to timing alignment between the reference and the microphones. It will only
+  work effectively with a hardware reference captured in sync with the microphone
+  channels.
 - Four-slot Philips TDM, 16-bit PCM, and 16 kHz are fixed.
 - AEC cannot fully model loudspeaker nonlinearities or rescue clipped signals.

@@ -36,7 +36,7 @@ playback DAC/codec, and amplifier. Record:
 The components require ESP-IDF, four-slot, 16-bit, 16 kHz TDM, and
 synchronized microphone channels. Use a TDM-capable target, preferably with a
 hardware FPU (ESP32-S3 or ESP32-P4), and working PSRAM for the microphone buffers. A
-hardware playback reference is strongly preferred. See
+hardware playback reference is required. See
 [Hardware & Audio Design]({{ '/hardware/' | relative_url }})
 before selecting or wiring a board.
 
@@ -145,24 +145,9 @@ active, and respond little to room speech. A spare or microphone-connected ADC
 channel is not a playback reference. Set the verified slot as `reference_slot`
 and use the captured reference directly.
 
-If the board has no hardware feedback path, use:
-
-```yaml
-aec_speexdsp:
-  reference_source: playback
-  reference_delay_samples: 0
-```
-
-The software reference is copied before the DAC, amplifier, speaker, enclosure,
-and acoustic path, so it cannot represent their gain, frequency response, delay,
-or nonlinear distortion. It is useful for experiments but should not be expected
-to match a well-designed hardware reference.
-
-At 16 kHz, 16 samples equal 1 ms. For a software reference, measure the
-playback-to-microphone delay with a repeatable, non-repeating signal and use the
-correlation peak as an initial `reference_delay_samples` value. Then sweep nearby
-values while keeping the clip, volume, room, and microphone position fixed. The
-accepted range is 0–4000 samples (0–250 ms).
+AEC is very sensitive to timing alignment between the reference and the microphones. It
+will only work effectively with a hardware reference captured in sync with the
+microphone channels.
 
 ## 8. Enable and evaluate the DSP
 
@@ -174,7 +159,7 @@ keeping near-end speech intelligible; complete silence is not a realistic goal.
 Tune in this order:
 
 1. correct slot mapping, clean levels, and stable TDM transport;
-2. correct reference source, level, and software-reference delay;
+2. correct hardware reference alignment and level;
 3. `noise_suppression_level_db`, then `echo_suppress_db` /
    `echo_suppress_active_db`;
 4. `filter_length` — a plain sample count (see

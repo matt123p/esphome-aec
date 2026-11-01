@@ -26,9 +26,8 @@ microphone muting and does not arm the barge-in gate.
 ## Playback and reference
 
 The playback task generates the tone with 5 ms fades, mixes it before playback
-gain and the reference tap, then sends it through normal speaker TX. Hardware
-references capture the actual output; software references include the rendered
-PCM. The cue bypasses TTS rebuffering and allocates no memory or waits in the
+gain and the reference tap, then sends it through normal speaker TX. The hardware
+reference captures the actual output. The cue bypasses TTS rebuffering and allocates no memory or waits in the
 wake callback. Clearing playback cancels it.
 
 Cue level follows `playback_gain_db` and the DAC volume. The standard example

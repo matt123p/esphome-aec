@@ -60,9 +60,10 @@ The reference platform is the
 > [!IMPORTANT]
 > This is a hardware-specific component, not a drop-in replacement for every
 > ESPHome I2S setup. You need synchronized microphone channels, a usable
-> playback reference, and compatible TDM ADC/DAC hardware. A clean hardware
-> reference gives substantially better results than a copied software playback
-> stream.
+> hardware playback reference, and compatible TDM ADC/DAC hardware.
+> AEC is very sensitive to timing alignment between the reference and the microphones.
+> It will only work effectively with a hardware reference captured in sync with the
+> microphone channels.
 
 ## Start here
 

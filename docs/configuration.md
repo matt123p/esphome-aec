@@ -10,8 +10,10 @@ and change one setting at a time.
 ## Hardware reference
 
 With `reference_source: analog_slot`, reference samples are used directly.
-See [reference timing]({{ '/reference-timing/' | relative_url }}) for hardware
-reference capture and software playback-reference delay.
+See [reference timing]({{ '/reference-timing/' | relative_url }}) for
+synchronized hardware reference capture. AEC is very sensitive to timing alignment
+between the reference and the microphones. It will only work effectively with a hardware
+reference captured in sync with the microphone channels.
 
 ## Optional GRU barge-in
 
@@ -39,9 +41,8 @@ the fix is not included in the existing `v1.01` tag.
 | `i2s_port` | no | `0` | ESP-IDF I2S port (`0`–`2`; chip-dependent). |
 | `tdm_slots` | no | `4` | Number of TDM slots; currently exactly `4`. |
 | `microphone_slots` | no | `[0, 1]` | One to four distinct RX slots (`0`–`3`). Physical slot numbers are mapped to dense internal channel storage. |
-| `reference_source` | no | `analog_slot` | `analog_slot` reads the loopback from an ADC slot (preferred); `playback` uses a mono copy of samples prepared for I2S TX, after resampling, cue mixing and digital gain. |
+| `reference_source` | no | `analog_slot` | Only `analog_slot` is supported: reads the hardware loopback from an ADC slot. |
 | `reference_slot` | no | `2` | RX slot for the analog reference; must differ from the microphone slots. |
-| `reference_delay_samples` | no | `0` | Software `playback` reference only: `0`–`4000` samples. Rejected with `analog_slot`, even at zero. 16 samples = 1 ms. |
 | `tx_slots` | no | `[0, 1]` | Two TDM TX slots consumed by the DAC (mono is duplicated; stereo maps L/R). |
 | `diagnostic_raw_slot` | no | disabled | Publish raw RX slot `0`–`3` instead of DSP output; for slot mapping. Also settable at runtime via `set_diagnostic_raw_slot(n)` (`-1` restores DSP output). |
 | `frame_size` | no | `256` | Processing frame in samples; power of two, `128`–`1024`. 256 = 16 ms. Larger frames amortize FFT overhead but increase latency. |

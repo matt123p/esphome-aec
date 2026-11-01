@@ -17,21 +17,9 @@ The adaptive echo filter models the causal speaker and room path within its
 configured `filter_length`. Validate both assistant-only playback and user
 speech over playback when choosing the filter length and suppression levels.
 
-## Software playback reference
-
-With `reference_source: playback`, the playback task feeds a mono copy of the
-samples prepared for I2S TX into a reference ring buffer, after resampling,
-cue mixing and digital gain. Stereo is averaged to mono, and empty playback
-frames contribute silence. `reference_delay_samples` pre-fills
-that buffer with silence to compensate playback-to-microphone latency. It
-accepts 0 to 4000 samples and defaults to zero; at 16 kHz, 16 samples equal 1 ms.
-This setting applies only to the software playback reference.
-
-Measure the latency with a repeatable non-repeating signal, then compare nearby
-settings using cancellation quality and speech intelligibility. Keep the
-reference no later than the earliest microphone echo: the adaptive filter can
-model remaining causal delay within its tail, but cannot predict a late reference.
-A software reference cannot represent amplifier distortion or rescue clipping.
+AEC is very sensitive to timing alignment between the reference and the microphones. It
+will only work effectively with a hardware reference captured in sync with the
+microphone channels.
 
 See [testing and tuning]({{ '/tuning/' | relative_url }}) and
 [configuration]({{ '/configuration/' | relative_url }}) for the remaining controls.

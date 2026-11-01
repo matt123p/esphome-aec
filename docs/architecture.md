@@ -22,8 +22,7 @@ The pipeline uses the open-source
 component. Per processed microphone channel it runs:
 
 1. **Capture synchronized signals.** One to four microphones and the playback
-   reference are read from the shared TDM clock domain, or the software
-   reference is aligned as closely as it can be.
+   hardware reference are read from the shared TDM clock domain.
 2. **Linear acoustic echo cancellation.** `speex_echo_cancellation()` adapts a
    frequency-domain filter — up to 16,384 samples (~1 s) of echo tail —
    between the reference and each microphone, and subtracts the estimated
@@ -131,10 +130,9 @@ duplicated into the two configured TX slots; stereo uses one slot for each
 channel. The four-slot TDM transmitter then carries those samples to the DAC,
 amplifier, and loudspeaker.
 
-When `reference_source: playback` is selected, the component also keeps a mono
-copy for the AEC reference. A stereo stream is averaged to produce that copy.
-With an analog reference, AEC instead uses the configured ADC slot and no
-playback copy is needed.
+AEC uses the hardware reference from the configured ADC slot. AEC is very sensitive to
+timing alignment between the reference and the microphones. It will only work
+effectively with a hardware reference captured in sync with the microphone channels.
 
 ### Why rate matching is needed
 

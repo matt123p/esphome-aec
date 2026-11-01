@@ -52,7 +52,6 @@ static const uint32_t PLAYBACK_BUFFER_MS = 2000;
 // the extra start-of-response latency at ~0.5 s).
 static const size_t PLAYBACK_REBUFFER_BYTES = 96 * 1024;
 static const uint32_t PLAYBACK_REBUFFER_MAX_MS = 500;
-static const uint32_t REFERENCE_BUFFER_MS = 250;
 static const size_t TRANSPORT_FRAME_SAMPLES = 512;
 static const uint32_t DIAGNOSTIC_LOG_INTERVAL_MS = 5000;
 static const uint32_t HANDOFF_LOG_INTERVAL_MS = 1000;
@@ -100,30 +99,6 @@ void AECSpeexDspComponent::setup() {
   this->playback_rate_.store(PLAYBACK_RATE);
   initialise_resampler();
 #endif
-
-  if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_PLAYBACK) {
-    std::unique_ptr<ring_buffer::RingBuffer> reference_buffer =
-        ring_buffer::RingBuffer::create(SAMPLE_RATE * sizeof(int16_t) * REFERENCE_BUFFER_MS / 1000);
-    if (reference_buffer == nullptr) {
-      ESP_LOGE(TAG, "Could not allocate playback reference ring buffer");
-      this->mark_failed();
-      return;
-    }
-    this->reference_buffer_ = std::shared_ptr<ring_buffer::RingBuffer>(std::move(reference_buffer));
-
-    if (this->reference_delay_samples_ > 0) {
-      std::vector<int16_t> zeros(this->reference_delay_samples_, 0);
-      size_t written = this->reference_buffer_->write(zeros.data(), zeros.size() * sizeof(int16_t));
-      if (written != zeros.size() * sizeof(int16_t)) {
-        ESP_LOGW(TAG, "Could only pre-fill %zu samples of reference delay (requested %u)",
-                 written / sizeof(int16_t), static_cast<unsigned>(this->reference_delay_samples_));
-      } else {
-        ESP_LOGI(TAG, "Pre-filled reference buffer with %u samples (%" PRIu32 " ms) of silence",
-                 static_cast<unsigned>(this->reference_delay_samples_),
-                 static_cast<uint32_t>(this->reference_delay_samples_) * 1000 / SAMPLE_RATE);
-      }
-    }
-  }
 
   if (this->playback_gain_db_ < 0.0f) {
     this->playback_gain_ = std::pow(10.0f, this->playback_gain_db_ / 20.0f);
@@ -217,7 +192,7 @@ void AECSpeexDspComponent::dump_config() {
                 "  VAD: %s (start threshold %u%%)",
                 this->i2s_port_, this->mclk_pin_, this->bclk_pin_, this->lrclk_pin_, this->din_pin_, this->dout_pin_,
                 this->tdm_slots_, this->microphone_slots_[0], second_slot,
-                this->reference_source_ == AEC_SPEEXDSP_REFERENCE_PLAYBACK ? "playback buffer" : "analog TDM",
+                "analog TDM",
                 this->reference_slot_, this->tx_slots_[0], this->tx_slots_[1], this->diagnostic_raw_slot_.load(),
                 this->output_channel_ == AEC_SPEEXDSP_OUTPUT_SECOND ? "second" : "first",
                 this->frame_size_, static_cast<unsigned>(this->frame_size_ * 1000u / static_cast<unsigned>(SAMPLE_RATE)),
@@ -297,12 +272,12 @@ void AECSpeexDspComponent::loop() {
     this->last_diagnostic_log_ = millis();
     ESP_LOGD(TAG,
              "rx_errors=%" PRIu32 " tx_errors=%" PRIu32 " underruns=%" PRIu32 " dropped=%" PRIu32
-             " ref_underruns=%" PRIu32 " ref_overflows=%" PRIu32 " max_processing_us=%" PRIu32
-             " playback_bytes=%u reference_bytes=%u reference_rms=%.1f reference_peak=%" PRIu32 " vad_prob=%.2f",
+             " max_processing_us=%" PRIu32
+             " playback_bytes=%u reference_rms=%.1f reference_peak=%" PRIu32 " vad_prob=%.2f",
              this->rx_errors_.load(), this->tx_errors_.load(), this->playback_underruns_.load(),
-             this->dropped_frames_.load(), this->reference_underruns_.load(), this->reference_overflows_.load(),
+             this->dropped_frames_.load(),
              this->max_processing_us_.load(), this->playback_buffer_ == nullptr ? 0 : this->playback_buffer_->available(),
-             this->reference_buffer_ == nullptr ? 0 : this->reference_buffer_->available(), this->reference_rms_.load(),
+             this->reference_rms_.load(),
              this->reference_peak_.load(), this->vad_probability_.load());
   }
 #endif
@@ -604,18 +579,7 @@ void AECSpeexDspComponent::run_audio_task_() {
       for (uint8_t c = 0; c < channels; c++)
         mic[this->beamforming_enabled_ ? frame * channels + c : c * frame_size + frame] =
             raw[frame * this->tdm_slots_ + this->processed_slots_[c]];
-      if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT)
-        ref[frame] = raw[frame * this->tdm_slots_ + this->reference_slot_];
-    }
-    bool reference_complete = true;
-    if (this->reference_source_ == AEC_SPEEXDSP_REFERENCE_PLAYBACK) {
-      const size_t reference_bytes = frame_size * sizeof(int16_t);
-      const size_t reference_read = this->reference_buffer_->read(ref, reference_bytes, pdMS_TO_TICKS(100));
-      if (reference_read != reference_bytes) {
-        reference_complete = false;
-        std::memset(reinterpret_cast<uint8_t *>(ref) + reference_read, 0, reference_bytes - reference_read);
-        this->reference_underruns_++;
-      }
+      ref[frame] = raw[frame * this->tdm_slots_ + this->reference_slot_];
     }
 
     uint64_t reference_sum_sq = 0;
@@ -664,7 +628,7 @@ void AECSpeexDspComponent::run_audio_task_() {
     }
     const int64_t neural_start = esp_timer_get_time();
     if (this->neural_reset_requested_.exchange(false)) this->neural_barge_->reset();
-    const bool neural_valid = reference_complete && this->diagnostic_raw_slot_.load() < 0 &&
+    const bool neural_valid = this->diagnostic_raw_slot_.load() < 0 &&
                               this->echo_state_[0] != nullptr && this->preprocess_state_[0] != nullptr;
     const auto neural = this->neural_enabled_ ? this->neural_barge_->process(raw + this->microphone_slots_[0],
         raw + this->microphone_slots_[1], this->tdm_slots_, ref, reference_frame.active,
@@ -745,7 +709,7 @@ void AECSpeexDspComponent::run_audio_task_() {
     auto measure_quality = [&](const int16_t *input, const int16_t *clean) {
       if (this->legacy_near_end_enabled_())
         this->cancellation_quality_.process(input, clean, ref, frame_size, reference_frame.active,
-                                            reference_frame.excited, reference_complete);
+                                            reference_frame.excited, true);
     };
     auto update_soft_suppression = [&]() {
       if (!this->soft_double_talk_enabled_ || !this->legacy_near_end_enabled_())
@@ -874,7 +838,7 @@ void AECSpeexDspComponent::run_audio_task_() {
       SpeexNearEndDiagnostics near{};
       speex_preprocess_ctl(this->preprocess_state_[0], SPEEX_PREPROCESS_GET_NEAR_END_DIAGNOSTICS, &near);
       this->near_end_probability_.store(near.probability);
-      bool observation_valid = reference_complete;
+      bool observation_valid = true;
       for (size_t n = 0; n < frame_size && observation_valid; ++n) {
         for (uint8_t c = 0; c < channels; ++c)
           observation_valid &= std::abs(static_cast<int32_t>(raw[n * this->tdm_slots_ + this->processed_slots_[c]])) < 32767;
@@ -1230,9 +1194,7 @@ void AECSpeexDspComponent::run_playback_task_() {
   auto *tx = static_cast<int16_t *>(heap_caps_aligned_alloc(16, raw_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   auto *playback = static_cast<int16_t *>(
       heap_caps_aligned_alloc(16, planar_samples * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-  auto *reference = static_cast<int16_t *>(
-      heap_caps_aligned_alloc(16, frame_size * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-  if (tx == nullptr || playback == nullptr || reference == nullptr) {
+  if (tx == nullptr || playback == nullptr) {
     ESP_LOGE(TAG, "Could not allocate playback frame buffers");
     this->dropped_frames_++;
     return;
@@ -1281,8 +1243,7 @@ void AECSpeexDspComponent::run_playback_task_() {
     const size_t beep_frames = this->wake_beep_.render(playback, frame_size, channels);
     playback_bytes = std::max(playback_bytes, beep_frames * channels * sizeof(int16_t));
 
-    // Attenuate media before the reference tap so TX output and AEC reference
-    // stay identical.
+    // Attenuate media before TX to keep the analog playback and loopback unclipped.
     if (this->playback_gain_ != 1.0f && playback_bytes > 0) {
       const float gain = this->playback_gain_;
       const size_t samples = playback_bytes / sizeof(int16_t);
@@ -1297,26 +1258,15 @@ void AECSpeexDspComponent::run_playback_task_() {
     }
 
     std::memset(tx, 0, raw_bytes);
-    std::memset(reference, 0, frame_size * sizeof(int16_t));
     size_t available_frames = playback_bytes / (channels * sizeof(int16_t));
     for (size_t frame = 0; frame < available_frames; frame++) {
       if (channels == 1) {
         tx[frame * this->tdm_slots_ + this->tx_slots_[0]] = playback[frame];
         tx[frame * this->tdm_slots_ + this->tx_slots_[1]] = playback[frame];
-        reference[frame] = playback[frame];
       } else {
         tx[frame * this->tdm_slots_ + this->tx_slots_[0]] = playback[frame * 2];
         tx[frame * this->tdm_slots_ + this->tx_slots_[1]] = playback[frame * 2 + 1];
-        reference[frame] =
-            static_cast<int16_t>((static_cast<int32_t>(playback[frame * 2]) + playback[frame * 2 + 1]) / 2);
       }
-    }
-
-    if (this->reference_buffer_ != nullptr) {
-      const size_t reference_bytes = frame_size * sizeof(int16_t);
-      if (this->reference_buffer_->free() < reference_bytes)
-        this->reference_overflows_++;
-      this->reference_buffer_->write(reference, reference_bytes);
     }
 
     size_t bytes_written = 0;
@@ -2045,16 +1995,6 @@ void AECSpeexDspComponent::clear_playback() {
 
   this->buffering_since_ms_.store(millis());
 
-  // A playback-backed AEC reference belongs to the same stream as the PCM
-  // above. Do not let reference audio from an interrupted stream bleed into
-  // the next one; restore only the configured acoustic delay silence.
-  if (this->reference_buffer_ != nullptr) {
-    this->reference_buffer_->reset();
-    if (this->reference_delay_samples_ > 0) {
-      std::vector<int16_t> zeros(this->reference_delay_samples_, 0);
-      this->reference_buffer_->write(zeros.data(), zeros.size() * sizeof(int16_t));
-    }
-  }
 #ifdef USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER
   // The phase accumulator and previous sample are stream-local. Retaining
   // them can interpolate the first sample of a new stream with the tail of

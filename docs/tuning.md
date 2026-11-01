@@ -98,30 +98,10 @@ speaker and raw reference at the loudest intended setting after changing it.
 
 ## 5. Reference timing
 
-Hardware `analog_slot` references pass directly to AEC. The delay tuning below
-applies only to a software playback reference.
-
-With `reference_source: playback`, the reference must line up with the echo at
-the microphones. `reference_delay_samples` pre-fills the reference ring buffer
-with silence, delaying the reference relative to playback:
-
-```text
-delay_ms = reference_delay_samples / 16
-samples  = delay_ms * 16
-```
-
-Useful starting points are 512 samples (32 ms), 1024 (64 ms), 1600 (100 ms),
-and 2048 (128 ms), but these are trial values rather than a measured latency.
-Play a deterministic, non-repeating calibration signal and compare the
-microphone echo with the software reference on the same capture timeline.
-Correlation against a source WAV also includes any unknown recording/playback
-start offset, so its peak alone is not a reliable delay setting. Leave enough
-causal offset for the adaptive filter, then sweep nearby values while measuring
-and listening; excessive reference delay can put the reference after the echo.
-
-For an analogue hardware reference, use the captured slot directly. Verify
-slot mapping, reference clipping and cancellation quality. See
-[reference timing]({{ '/reference-timing/' | relative_url }}) for both sources.
+AEC is very sensitive to timing alignment between the reference and the microphones. It
+will only work effectively with a hardware reference captured in sync with the
+microphone channels. Use the captured slot directly and verify its mapping and level.
+See [reference timing]({{ '/reference-timing/' | relative_url }}).
 
 ## 6. Measure cancellation and double-talk
 
@@ -134,8 +114,7 @@ speech is not acceptable full-duplex performance.
 Tune in this order:
 
 1. correct slot mapping and unclipped ADC/DAC levels;
-2. correct reference source and `playback_gain_db`; for a software playback
-   reference only, measure and tune `reference_delay_samples`;
+2. correct hardware reference alignment and `playback_gain_db`;
 3. `noise_suppression_level_db`;
 4. `echo_suppress_db` / `echo_suppress_active_db` — higher values remove more
    residual echo; lower `echo_suppress_active_db` preserves double-talk;

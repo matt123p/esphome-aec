@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Removed
+
+- Removed the software playback reference and `reference_delay_samples`.
+  AEC now requires a hardware reference synchronized with the microphones;
+  cancellation is very sensitive to their timing alignment. Existing
+  `reference_source: analog_slot` configurations continue to work.
+
 ### Fixed
 
 - With `neural_barge_in.speech_protection: true`, confirmed barge-in now

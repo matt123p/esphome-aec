@@ -52,7 +52,6 @@ extern AECSpeexDspComponent *global_aec_speexdsp;
 
 enum AECSpeexDspReferenceSource : uint8_t {
   AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT = 0,
-  AEC_SPEEXDSP_REFERENCE_PLAYBACK = 1,
 };
 
 // Which microphone runs through the mono canceller and preprocessor.
@@ -202,7 +201,6 @@ class AECSpeexDspComponent : public Component {
   void set_speaker(AECSpeexDspSpeaker *speaker) { this->speaker_ = speaker; }
   void play_wake_beep() { this->wake_beep_.start(); }
   bool is_wake_beep_active() const { return this->wake_beep_.active(); }
-  void set_reference_delay_samples(uint16_t samples) { this->reference_delay_samples_ = samples; }
   // Digital attenuation applied to media playback before the I2S TX and the
   // reference tap, keeping the analog chain (amp, loopback) out of clipping.
   void set_playback_gain_db(float db) { this->playback_gain_db_ = db; }
@@ -345,7 +343,6 @@ class AECSpeexDspComponent : public Component {
   AECSpeexDspMicrophone *microphone_{nullptr};
   AECSpeexDspSpeaker *speaker_{nullptr};
   std::shared_ptr<ring_buffer::RingBuffer> playback_buffer_;
-  std::shared_ptr<ring_buffer::RingBuffer> reference_buffer_;
   TaskHandle_t audio_task_handle_{nullptr};
   TaskHandle_t playback_task_handle_{nullptr};
   i2s_chan_handle_t rx_handle_{nullptr};
@@ -384,7 +381,6 @@ class AECSpeexDspComponent : public Component {
   uint8_t echo_suppress_db_{40};
   uint8_t echo_suppress_active_db_{15};
   bool soft_double_talk_enabled_{false};
-  uint16_t reference_delay_samples_{0};
   float playback_gain_db_{0.0f};
   float playback_gain_{1.0f};
   WakeBeep wake_beep_;
@@ -434,8 +430,6 @@ class AECSpeexDspComponent : public Component {
   std::atomic<uint32_t> rx_errors_{0};
   std::atomic<uint32_t> tx_errors_{0};
   std::atomic<uint32_t> playback_underruns_{0};
-  std::atomic<uint32_t> reference_underruns_{0};
-  std::atomic<uint32_t> reference_overflows_{0};
   std::atomic<uint32_t> dropped_frames_{0};
   std::atomic<uint32_t> max_processing_us_{0};
   std::atomic<bool> buffering_{true};

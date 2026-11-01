@@ -31,7 +31,6 @@ CONF_PLAYBACK_GAIN_DB = "playback_gain_db"
 CONF_PROFILING = "profiling"
 CONF_REFERENCE_SLOT = "reference_slot"
 CONF_REFERENCE_SOURCE = "reference_source"
-CONF_REFERENCE_DELAY_SAMPLES = "reference_delay_samples"
 CONF_RESAMPLER = "resampler"
 CONF_TDM_SLOTS = "tdm_slots"
 CONF_TX_SLOTS = "tx_slots"
@@ -45,7 +44,6 @@ AECSpeexDspMetersComponent = aec_speexdsp_ns.class_("AECSpeexDspMetersComponent"
 AECSpeexDspReferenceSource = aec_speexdsp_ns.enum("AECSpeexDspReferenceSource")
 REFERENCE_SOURCES = {
     "analog_slot": AECSpeexDspReferenceSource.AEC_SPEEXDSP_REFERENCE_ANALOG_SLOT,
-    "playback": AECSpeexDspReferenceSource.AEC_SPEEXDSP_REFERENCE_PLAYBACK,
 }
 
 AECSpeexDspOutputChannel = aec_speexdsp_ns.enum("AECSpeexDspOutputChannel")
@@ -86,10 +84,12 @@ def _validate(config):
         raise cv.Invalid("All selected slots must be lower than tdm_slots")
     if len(set(selected)) != len(selected):
         raise cv.Invalid("Microphone slots must be distinct")
-    if config[CONF_REFERENCE_SOURCE] == "analog_slot" and reference in selected:
+    if config[CONF_REFERENCE_SOURCE] != "analog_slot":
+        raise cv.Invalid("AEC requires a hardware reference (analog_slot)")
+    if reference in selected:
         raise cv.Invalid("The analog reference slot must not also be a microphone slot")
-    if config[CONF_REFERENCE_SOURCE] == "analog_slot" and CONF_REFERENCE_DELAY_SAMPLES in config:
-        raise cv.Invalid("reference_delay_samples is only supported with reference_source: playback")
+    if "reference_delay_samples" in config:
+        raise cv.Invalid("reference_delay_samples is no longer supported; use a synchronized hardware reference")
     if config[CONF_FRAME_SIZE] % 64 != 0:
         raise cv.Invalid("frame_size must be a multiple of 64")
     if config[CONF_FRAME_SIZE] & (config[CONF_FRAME_SIZE] - 1):
@@ -222,7 +222,6 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ECHO_SUPPRESS_DB, default=40): cv.int_range(min=5, max=60),
             cv.Optional(CONF_ECHO_SUPPRESS_ACTIVE_DB, default=15): cv.int_range(min=5, max=60),
             cv.Optional(CONF_PLAYBACK_GAIN_DB, default=0.0): cv.float_range(min=-60.0, max=0.0),
-            cv.Optional(CONF_REFERENCE_DELAY_SAMPLES): cv.int_range(min=0, max=4000),
             cv.Optional(CONF_RESAMPLER, default=False): cv.boolean,
             cv.Optional(CONF_METERS): cv.Schema(
                 {
@@ -330,8 +329,6 @@ async def to_code(config):
     cg.add(var.set_playback_gain_db(config[CONF_PLAYBACK_GAIN_DB]))
     if config[CONF_RESAMPLER]:
         cg.add_define("USE_AEC_SPEEXDSP_PLAYBACK_RESAMPLER")
-    if config[CONF_REFERENCE_SOURCE] == "playback":
-        cg.add(var.set_reference_delay_samples(config.get(CONF_REFERENCE_DELAY_SAMPLES, 0)))
 
     if meters_config := config.get(CONF_METERS):
         # The define makes the meter class available to generated UI lambdas.

@@ -41,7 +41,7 @@ struct PipelineConfig {
     int vad_threshold = 35;
     int echo_suppress_db = 40;
     int echo_suppress_active_db = 15;
-    int reference_delay_samples = 0;  // component's apply_reference_delay_
+    int reference_delay_samples = 0;  // synthetic delay for DSP experiments
     BeamConfig beam;
 };
 

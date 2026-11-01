@@ -181,10 +181,9 @@ speaker:
 
 For an ESP32-S3, adapt the target, pins, PSRAM, power and clock settings to
 the actual board; the P4-specific settings above are not portable unchanged.
-On a board without an analog
-loopback slot, use `reference_source: playback` and tune
-`reference_delay_samples` (0–4000) instead; expect weaker cancellation than a
-hardware reference.
+AEC is very sensitive to timing alignment between the reference and the microphones. It
+will only work effectively with a hardware reference captured in sync with the
+microphone channels. Choose a board with a hardware loopback path.
 
 `filter_length` is a plain sample count of echo tail (16 samples = 1 ms at
 16 kHz). The component default is 2048 samples (~128 ms), while the complete

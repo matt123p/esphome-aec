@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
   <title id="title">AEC audio system architecture</title>
-  <desc id="desc">One or more microphones and an optional playback reference enter the TDM receiver and the SpeexDSP processing pipeline. Cleaned speech is sent to wake word detection and Home Assistant. Response audio returns through digital gain and rate matching, TDM transmission, the DAC, and speaker.</desc>
+  <desc id="desc">One or more microphones and an hardware playback reference enter the TDM receiver and the SpeexDSP processing pipeline. Cleaned speech is sent to wake word detection and Home Assistant. Response audio returns through digital gain and rate matching, TDM transmission, the DAC, and speaker.</desc>
   <defs>
     <marker id="signal-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
@@ -14,7 +14,7 @@
   </defs>
   <text x="40" y="40" class="h">Capture and recognition</text>
   <rect x="40" y="75" width="190" height="110" rx="14" class="box audio"/>
-  <text x="135" y="112" text-anchor="middle" class="l">Audio inputs</text><text x="135" y="140" text-anchor="middle" class="s">Mic 1 · Mic 2 · …</text><text x="135" y="164" text-anchor="middle" class="s">hardware reference (opt.)</text>
+  <text x="135" y="112" text-anchor="middle" class="l">Audio inputs</text><text x="135" y="140" text-anchor="middle" class="s">Mic 1 · Mic 2 · …</text><text x="135" y="164" text-anchor="middle" class="s">hardware reference</text>
   <rect x="285" y="75" width="195" height="110" rx="14" class="box"/>
   <text x="382" y="112" text-anchor="middle" class="l">TDM receive</text><text x="382" y="140" text-anchor="middle" class="s">four synchronized</text><text x="382" y="164" text-anchor="middle" class="s">16 kHz slots</text>
   <rect x="535" y="75" width="215" height="110" rx="14" class="box process"/>
@@ -32,5 +32,4 @@
   <rect x="65" y="315" width="185" height="105" rx="14" class="box audio"/><text x="157" y="350" text-anchor="middle" class="l">Loudspeaker</text><text x="157" y="379" text-anchor="middle" class="s">sound in the room</text>
   <path d="M1025 367H970" class="line" marker-end="url(#signal-arrow)"/><path d="M785 367H730" class="line" marker-end="url(#signal-arrow)"/><path d="M545 367H490" class="line" marker-end="url(#signal-arrow)"/><path d="M305 367H250" class="line" marker-end="url(#signal-arrow)"/>
   <path d="M157 315C157 245 135 245 135 185" class="echo" marker-end="url(#reference-arrow)"/><text x="176" y="250" class="s">acoustic echo reaches both microphones</text>
-  <path d="M832 315C730 260 690 245 650 185" class="echo" marker-end="url(#reference-arrow)"/><text x="690" y="254" class="s">software reference when selected</text>
 </svg>

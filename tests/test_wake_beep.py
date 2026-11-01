@@ -1,4 +1,4 @@
-"""Exercise the production wake cue and its reference-tap placement."""
+"""Exercise the production wake cue and its playback placement."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -51,4 +51,4 @@ int main() {
     subprocess.run([str(exe)],check=True)
     source=(ROOT/'src/esphome/aec_speexdsp/aec_speexdsp.cpp').read_text()
     playback=source.split('void AECSpeexDspComponent::run_playback_task_()',1)[1]
-    assert playback.index('wake_beep_.render(')<playback.index('const float gain =')<playback.index('reference[frame] =')
+    assert playback.index('wake_beep_.render(')<playback.index('const float gain =')<playback.index('tx[frame * this->tdm_slots_')
